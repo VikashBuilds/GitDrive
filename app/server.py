@@ -12,7 +12,7 @@ from urllib.parse import quote
 import httpx
 import psycopg2
 import uvicorn
-from fastapi import FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 
 DB_URL = os.environ["DB_URL"]
@@ -379,22 +379,21 @@ async def download(file_id: str):
     return RedirectResponse(url)
 
 
-@app.post("/v1/upload")
-async def upload(file: UploadFile = File(...), x_api_key: str = Header(""), expire_days: int | None = None):
-    check_key(x_api_key)
-    data = await file.read()
-    if len(data) > POOL_MAX:
-        raise HTTPException(413, f"file too large (max {POOL_MAX_GB} GB — pool limit)")
-    name = re.sub(r"[^A-Za-z0-9._-]", "_", file.filename or "file")
-    ext = os.path.splitext(name)[1].lower()
-    mime = (file.content_type or "").lower()
-    if ext in BLOCKED_EXT or mime in BLOCKED_MIME:
-        raise HTTPException(415, "mime type not allowed")
+def finalize_upload(name: str, mime: str, data_path: str, expires: datetime | None = None):
+    """Shared tail of upload: hash, dedupe, tier decision, record row.
 
-    sha = hashlib.sha256(data).hexdigest()
+    Works on a spool file so big uploads never sit fully in RAM.
+    """
+    size = os.path.getsize(data_path)
+    sha = hashlib.sha256()
+    with open(data_path, "rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            sha.update(block)
+    digest = sha.hexdigest()
+
     conn = db()
     cur = conn.cursor()
-    cur.execute("SELECT id, url, size, mime, status, expires_at, download_count FROM files WHERE sha = %s", (sha,))
+    cur.execute("SELECT id, url, size, mime, status, expires_at, download_count FROM files WHERE sha = %s", (digest,))
     row = cur.fetchone()
     if row:
         cur.close()
@@ -404,21 +403,20 @@ async def upload(file: UploadFile = File(...), x_api_key: str = Header(""), expi
 
     fid = uuid.uuid4().hex[:12]
     now = datetime.now(timezone.utc)
-    rel = f"files/{now.strftime('%Y/%m')}/{sha[:2]}/{fid}-{name}"
-    set_id = f"set-{int(sha[:2], 16) % SET_COUNT:02d}"
+    rel = f"files/{now.strftime('%Y/%m')}/{digest[:2]}/{fid}-{name}"
+    set_id = f"set-{int(digest[:2], 16) % SET_COUNT:02d}"
     repo = repo_for(set_id)
 
-    expires = None
-    if expire_days:
-        expires = now + timedelta(days=expire_days)
-
-    if len(data) <= GIT_THRESHOLD:
-        git_store_bytes(data, rel, repo)
+    if size <= GIT_THRESHOLD:
+        with open(data_path, "rb") as fh:
+            git_store_bytes(fh.read(), rel, repo)
         url = f"https://raw.githubusercontent.com/{repo}/main/{rel}"
         store = "git"
         tag = None
         status = "ready"
-    elif len(data) <= RELEASE_MAX:
+    elif size <= RELEASE_MAX:
+        with open(data_path, "rb") as fh:
+            data = fh.read()
         tag = "assets-" + now.strftime("%Y%m%d%H")
         url = release_upload(data, name, mime, tag, repo)
         store = "release"
@@ -427,8 +425,8 @@ async def upload(file: UploadFile = File(...), x_api_key: str = Header(""), expi
         # Big file (2-12 GB): only the relay pool can hold it.
         # Buffer on the API runner; a carousel node drains it into its set.
         os.makedirs(BUFFER_DIR, exist_ok=True)
-        with open(os.path.join(BUFFER_DIR, fid), "wb") as fh:
-            fh.write(data)
+        dest = os.path.join(BUFFER_DIR, fid)
+        os.replace(data_path, dest)
         url = ""
         store = "pool"
         status = "buffered"
@@ -445,17 +443,103 @@ async def upload(file: UploadFile = File(...), x_api_key: str = Header(""), expi
     cur.execute(
         "INSERT INTO files (id, sha, name, size, mime, store, path, release_tag, url, expires_at, set_id, repo, status) "
         "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-        (fid, sha, name, len(data), mime, store, rel, tag, url, expires, set_id, repo, status),
+        (fid, digest, name, size, mime, store, rel, tag, url, expires, set_id, repo, status),
     )
     conn.commit()
     cur.close()
     conn.close()
 
-    enqueue_compress(fid, len(data), mime)
+    enqueue_compress(fid, size, mime)
     note = "queued for relay pool" if store == "pool" else None
-    return {"id": fid, "name": name, "size": len(data), "mime": mime, "url": url,
+    return {"id": fid, "name": name, "size": size, "mime": mime, "url": url,
             "deduped": False, "status": status, "note": note,
             "expires_at": expires.isoformat() if expires else None}
+
+
+@app.post("/v1/upload")
+async def upload(file: UploadFile = File(...), x_api_key: str = Header(""), expire_days: int | None = None):
+    check_key(x_api_key)
+    name = re.sub(r"[^A-Za-z0-9._-]", "_", file.filename or "file")
+    ext = os.path.splitext(name)[1].lower()
+    mime = (file.content_type or "").lower()
+    if ext in BLOCKED_EXT or mime in BLOCKED_MIME:
+        raise HTTPException(415, "mime type not allowed")
+
+    os.makedirs(BUFFER_DIR, exist_ok=True)
+    spool = os.path.join(BUFFER_DIR, f"up-{uuid.uuid4().hex[:12]}")
+    total = 0
+    with open(spool, "wb") as fh:
+        while True:
+            chunk = await file.read(1 << 20)
+            if not chunk:
+                break
+            total += len(chunk)
+            fh.write(chunk)
+    try:
+        if total > POOL_MAX:
+            raise HTTPException(413, f"file too large (max {POOL_MAX_GB} GB — pool limit)")
+        expires = datetime.now(timezone.utc) + timedelta(days=expire_days) if expire_days else None
+        result = finalize_upload(name, mime, spool, expires=expires)
+    finally:
+        if os.path.exists(spool):
+            os.remove(spool)
+    return result
+
+
+@app.post("/v1/upload/start")
+async def upload_start(name: str, total_size: int, mime: str = "", x_api_key: str = Header("")):
+    """Open a chunked upload session (bypasses the 100 MB edge cap)."""
+    check_key(x_api_key)
+    if total_size > POOL_MAX:
+        raise HTTPException(413, f"file too large (max {POOL_MAX_GB} GB — pool limit)")
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", name or "file")
+    ext = os.path.splitext(safe)[1].lower()
+    if ext in BLOCKED_EXT or (mime or "").lower() in BLOCKED_MIME:
+        raise HTTPException(415, "mime type not allowed")
+    if total_size <= 0:
+        raise HTTPException(400, "total_size must be positive")
+    fid = uuid.uuid4().hex[:12]
+    os.makedirs(BUFFER_DIR, exist_ok=True)
+    with open(os.path.join(BUFFER_DIR, f"{fid}.up"), "wb") as fh:
+        fh.truncate(total_size)
+    with open(os.path.join(BUFFER_DIR, f"{fid}.meta"), "w") as fh:
+        json.dump({"name": safe, "mime": mime or "", "total_size": total_size, "created": time.time()}, fh)
+    return {"id": fid, "total_size": total_size}
+
+
+@app.post("/v1/upload/chunk/{fid}")
+async def upload_chunk(fid: str, offset: int, request: Request, x_api_key: str = Header("")):
+    """Append a ≤90 MB chunk at a fixed offset; 409 with current offset if stale."""
+    check_key(x_api_key)
+    path = os.path.join(BUFFER_DIR, f"{fid}.up")
+    if not os.path.exists(path):
+        raise HTTPException(404, "upload session not found")
+    size = os.path.getsize(path)
+    if offset != size:
+        raise HTTPException(409, f"offset mismatch: have {size}")
+    received = 0
+    with open(path, "r+b") as fh:
+        fh.seek(offset)
+        async for chunk in request.stream():
+            fh.write(chunk)
+            received += len(chunk)
+    return {"offset": offset + received, "received": received}
+
+
+@app.post("/v1/upload/complete/{fid}")
+async def upload_complete(fid: str, x_api_key: str = Header("")):
+    """Finalize a chunked upload: hash, dedupe, tier decision, DB row."""
+    check_key(x_api_key)
+    path = os.path.join(BUFFER_DIR, f"{fid}.up")
+    meta_path = os.path.join(BUFFER_DIR, f"{fid}.meta")
+    if not os.path.exists(path) or not os.path.exists(meta_path):
+        raise HTTPException(404, "upload session not found")
+    with open(meta_path) as fh:
+        meta = json.load(fh)
+    if os.path.getsize(path) != meta["total_size"]:
+        raise HTTPException(400, f"incomplete upload: {os.path.getsize(path)}/{meta['total_size']}")
+    os.remove(meta_path)
+    return finalize_upload(meta["name"], meta["mime"], path)
 
 
 @app.get("/v1/file/{file_id}")
