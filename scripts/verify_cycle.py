@@ -50,11 +50,30 @@ def call(c, method, url, **kw):
     return last if isinstance(last, httpx.Response) else None
 
 
+def _discover_tunnel_url() -> str:
+    db_url = os.environ.get("DB_URL", "")
+    if not db_url:
+        return ""
+    try:
+        import psycopg2
+        conn = psycopg2.connect(db_url)
+        cur = conn.cursor()
+        cur.execute("SELECT v FROM meta WHERE k = 'tunnel_url'")
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        return (row[0] if row else "").rstrip("/")
+    except Exception:
+        return ""
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--api", default=API_URL)
     ap.add_argument("--key", default=API_KEY)
     args = ap.parse_args()
+    if not args.api:
+        args.api = _discover_tunnel_url()
     if not args.api or not args.key:
         print("FATAL: need --api and --key (or API_URL/API_KEY env)")
         sys.exit(2)
