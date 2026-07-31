@@ -41,7 +41,7 @@ BLOCKED_MIME = {"text/html", "application/x-msdownload", "application/x-sh"}
 app = FastAPI(title="GitDrive API")
 _uploads = defaultdict(deque)
 _gh = httpx.Client(timeout=300)
-_gh_async = httpx.AsyncClient(timeout=600)
+_gh_async = httpx.AsyncClient(timeout=600, follow_redirects=True)
 
 
 def db():
