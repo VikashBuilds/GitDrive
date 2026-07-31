@@ -109,6 +109,13 @@ def ensure_release(tag: str, repo: str) -> int:
         headers=GH,
         json={"tag_name": tag, "name": tag, "prerelease": True, "target_commitish": "main"},
     )
+    if r2.status_code == 422 and "Repository is empty" in r2.text:
+        _seed_empty_repo(repo)
+        r2 = _gh.post(
+            f"https://api.github.com/repos/{repo}/releases",
+            headers=GH,
+            json={"tag_name": tag, "name": tag, "prerelease": True, "target_commitish": "main"},
+        )
     r2.raise_for_status()
     return r2.json()["id"]
 
@@ -172,6 +179,30 @@ def startup():
             )
         git(["config", "user.name", "GitDrive Bot"], repo)
         git(["config", "user.email", "gitdrive@users.noreply.github.com"], repo)
+        if not _repo_has_commits(repo):
+            _seed_empty_repo(repo)
+
+
+def _repo_has_commits(repo: str) -> bool:
+    r = subprocess.run(["git", "rev-parse", "--verify", "HEAD"], cwd=STORE_DIRS[repo], capture_output=True)
+    return r.returncode == 0
+
+
+def _seed_empty_repo(repo: str):
+    """GitHub refuses to create Releases on empty repos — seed an initial commit."""
+    dest = os.path.join(STORE_DIRS[repo], "README.md")
+    with open(dest, "w") as f:
+        f.write(f"# GitDrive storage repo\nInitialized {datetime.now(timezone.utc).isoformat()}.\n")
+    git(["add", "README.md"], repo)
+    git(["commit", "-m", "chore: init storage repo"], repo)
+    for attempt in range(3):
+        try:
+            git(["push"], repo)
+            print(f"[startup] seeded empty repo {repo}")
+            return
+        except RuntimeError:
+            git(["pull", "--rebase"], repo)
+    print(f"[startup] WARNING: could not seed {repo}")
 
 
 @app.get("/v1/health")
