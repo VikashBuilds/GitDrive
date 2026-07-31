@@ -1,0 +1,33 @@
+name: carousel-supervisor
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 * * * *"   # every hour: make sure chains are alive
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  supervise:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install psycopg2-binary
+
+      - name: Supervise the carousel
+        env:
+          DB_URL: ${{ secrets.GITDRIVE_DB_URL }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          CHAINS: carousel-01 carousel-02 carousel-03
+        run: |
+          gh auth setup-git
+          python scripts/supervise_carousel.py

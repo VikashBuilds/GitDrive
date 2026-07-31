@@ -1,0 +1,52 @@
+name: GitDrive Compress Workers
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '37 */2 * * *'
+  repository_dispatch:
+    types: [compress]
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+    steps:
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install deps
+        run: pip install psycopg2-binary
+      - name: Pick jobs
+        id: pick
+        env:
+          DB_URL: ${{ secrets.GITDRIVE_DB_URL }}
+        run: |
+          echo "matrix=$(python scripts/pick_jobs.py --limit 10 --type compress)" >> $GITHUB_OUTPUT
+
+  worker:
+    needs: prepare
+    if: needs.prepare.outputs.matrix != 'null'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install deps
+        run: pip install httpx psycopg2-binary Pillow
+      - name: Compress job ${{ matrix.job_id }}
+        env:
+          DB_URL: ${{ secrets.GITDRIVE_DB_URL }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          STORAGE_REPO: ${{ secrets.GITDRIVE_STORAGE_REPO }}
+        run: python scripts/compress_worker.py --job-id ${{ matrix.job_id }}

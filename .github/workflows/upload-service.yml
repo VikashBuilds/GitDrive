@@ -1,0 +1,92 @@
+name: GitDrive Upload Service
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 */6 * * *'
+
+concurrency:
+  group: gitdrive-service
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  service:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install deps
+        run: pip install fastapi uvicorn httpx psycopg2-binary python-multipart
+
+      - name: Configure git identity
+        run: |
+          git config --global user.name "GitDrive Bot"
+          git config --global user.email "gitdrive@users.noreply.github.com"
+
+      - name: Start cloudflared tunnel
+        run: |
+          curl -sL --retry 3 https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /tmp/cloudflared
+          chmod +x /tmp/cloudflared
+          /tmp/cloudflared tunnel --url http://localhost:8080 > /tmp/tunnel.log 2>&1 &
+          sleep 12
+
+      - name: Read tunnel URL
+        id: tunnel
+        run: |
+          URL=$(grep -oP 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/tunnel.log | head -1)
+          echo "url=$URL" >> $GITHUB_OUTPUT
+
+      - name: Publish tunnel URL to DB
+        env:
+          DB_URL: ${{ secrets.GITDRIVE_DB_URL }}
+          TUNNEL_URL: ${{ steps.tunnel.outputs.url }}
+        run: |
+          python - <<'EOF'
+          import os, psycopg2
+          conn = psycopg2.connect(os.environ["DB_URL"])
+          cur = conn.cursor()
+          cur.execute(
+              "INSERT INTO meta (k, v) VALUES ('tunnel_url', %s) "
+              "ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v, updated_at = now()",
+              (os.environ.get("TUNNEL_URL", ""),),
+          )
+          conn.commit()
+          cur.close(); conn.close()
+          EOF
+
+      - name: Run GitDrive server
+        env:
+          DB_URL: ${{ secrets.GITDRIVE_DB_URL }}
+          API_KEYS: ${{ secrets.GITDRIVE_API_KEYS }}
+          STORAGE_REPOS: ${{ secrets.STORAGE_REPOS }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          RELAY_TOKEN: ${{ secrets.RELAY_TOKEN }}
+          UPLOAD_LIMIT_MB: '25'
+          POOL_MAX_GB: '12'
+          RATE_LIMIT_PER_HOUR: '60'
+        run: |
+          python app/server.py &
+          sleep 345 && kill %1 || true
+
+      - name: Chain next run
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
+        run: |
+          for attempt in 1 2 3; do
+            gh workflow run "GitDrive Upload Service" --repo ${{ github.repository }} && exit 0
+            sleep 10
+          done
+          exit 1

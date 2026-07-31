@@ -1,0 +1,29 @@
+name: GitDrive Prune & Stats
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '47 3 * * *'
+
+permissions:
+  contents: write
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install deps
+        run: pip install httpx psycopg2-binary
+      - name: Run prune
+        env:
+          DB_URL: ${{ secrets.GITDRIVE_DB_URL }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          STORAGE_REPO: ${{ secrets.GITDRIVE_STORAGE_REPO }}
+          TELEGRAM_WEBHOOK: ${{ secrets.TELEGRAM_WEBHOOK }}
+        run: python scripts/prune.py

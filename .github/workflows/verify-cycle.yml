@@ -1,0 +1,48 @@
+name: verify-cycle
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * *"   # daily proof that the data cycle works
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install httpx psycopg2-binary
+
+      - name: Discover API URL from meta table
+        env:
+          DB_URL: ${{ secrets.GITDRIVE_DB_URL }}
+        run: |
+          python - <<'EOF'
+          import os, psycopg2
+          conn = psycopg2.connect(os.environ["DB_URL"])
+          cur = conn.cursor()
+          cur.execute("SELECT value FROM meta WHERE key = 'tunnel_url'")
+          row = cur.fetchone()
+          print(f"API_URL={row[0] if row else ''}")
+          cur.close(); conn.close()
+          EOF
+          >> $GITHUB_ENV
+
+      - name: Run full-cycle verification
+        env:
+          API_URL: ${{ env.API_URL }}
+          API_KEY: ${{ secrets.GITDRIVE_API_KEYS }}
+        run: |
+          KEY=$(echo "$API_KEY" | cut -d, -f1 | xargs)
+          python scripts/verify_cycle.py --api "$API_URL" --key "$KEY"

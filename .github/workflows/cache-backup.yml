@@ -1,0 +1,58 @@
+name: GitDrive Cache Backup
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 5 * * *'
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.chunks.outputs.matrix }}
+      date: ${{ steps.chunks.outputs.date }}
+    steps:
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install deps
+        run: pip install httpx psycopg2-binary
+      - name: Build chunks
+        id: chunks
+        env:
+          DB_URL: ${{ secrets.GITDRIVE_DB_URL }}
+        run: |
+          echo "matrix=$(python scripts/cache_backup.py --build-chunks)" >> $GITHUB_OUTPUT
+          echo "date=$(date +%Y%m%d)" >> $GITHUB_OUTPUT
+
+  store:
+    needs: prepare
+    if: needs.prepare.outputs.matrix != 'null'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
+    steps:
+      - uses: actions/cache@v4
+        with:
+          path: ${{ matrix.path }}
+          key: gitdrive-backup-${{ needs.prepare.outputs.date }}-${{ matrix.chunk }}
+
+  prune:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install deps
+        run: pip install httpx
+      - name: Prune old snapshots
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: python scripts/cache_backup.py --prune --keep-days 5 --today ${{ needs.prepare.outputs.date }}
