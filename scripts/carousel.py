@@ -302,8 +302,8 @@ def checkin_set(set_id: str, manifest: list) -> list:
             r = client.post(
                 f"https://uploads.github.com/repos/{STORAGE_REPO}/releases/{release_id}/assets"
                 f"?name={quote(f.name)}",
-                headers=GH,
-                files={"file": (f.name, f.read_bytes(), "application/octet-stream")},
+                headers={**GH, "Content-Type": "application/octet-stream"},
+                content=f.read_bytes(),
             )
             r.raise_for_status()
             new_manifest.append({
@@ -324,8 +324,8 @@ def checkin_set(set_id: str, manifest: list) -> list:
                     r = client.post(
                         f"https://uploads.github.com/repos/{STORAGE_REPO}/releases/{release_id}/assets"
                         f"?name={quote(pname)}",
-                        headers=GH,
-                        files={"file": (pname, chunk, "application/octet-stream")},
+                        headers={**GH, "Content-Type": "application/octet-stream"},
+                        content=chunk,
                     )
                     r.raise_for_status()
                     parts.append(r.json()["browser_download_url"])

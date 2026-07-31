@@ -124,8 +124,8 @@ def release_upload(data: bytes, name: str, mime: str, tag: str, repo: str) -> st
     release_id = ensure_release(tag, repo)
     r = _gh.post(
         f"https://uploads.github.com/repos/{repo}/releases/{release_id}/assets?name={quote(name)}",
-        headers=GH,
-        files={"file": (name, data, mime or "application/octet-stream")},
+        headers={**GH, "Content-Type": mime or "application/octet-stream"},
+        content=data,
     )
     r.raise_for_status()
     return f"https://github.com/{repo}/releases/download/{tag}/{quote(name)}"
@@ -295,8 +295,8 @@ async def archive_part(file_id: str, index: int, file: UploadFile = File(...),
     pname = f"{name}.part{index:03d}"
     r = _gh.post(
         f"https://uploads.github.com/repos/{repo}/releases/{release_id}/assets?name={quote(pname)}",
-        headers=GH,
-        files={"file": (pname, data, "application/octet-stream")},
+        headers={**GH, "Content-Type": "application/octet-stream"},
+        content=data,
     )
     r.raise_for_status()
     parts.append({"url": r.json()["browser_download_url"], "size": len(data)})
