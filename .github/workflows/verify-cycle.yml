@@ -28,7 +28,7 @@ jobs:
         env:
           DB_URL: ${{ secrets.GITDRIVE_DB_URL }}
         run: |
-          python - <<'EOF'
+          python - <<'EOF' >> $GITHUB_ENV
           import os, psycopg2
           conn = psycopg2.connect(os.environ["DB_URL"])
           cur = conn.cursor()
@@ -37,7 +37,6 @@ jobs:
           print(f"API_URL={row[0] if row else ''}")
           cur.close(); conn.close()
           EOF
-          >> $GITHUB_ENV
 
       - name: Run full-cycle verification
         env:
