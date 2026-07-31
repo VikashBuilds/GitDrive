@@ -39,7 +39,7 @@ jobs:
         run: pip install fastapi uvicorn httpx psycopg2-binary python-multipart
 
       - name: Prepare data dir
-        run: mkdir -p /mnt/data
+        run: mkdir -p /tmp/carousel-data
 
       - name: Start cloudflared tunnel
         run: |
