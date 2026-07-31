@@ -300,7 +300,7 @@ def checkin_set(set_id: str, manifest: list) -> list:
             tag = f"carousel-{set_id}-{datetime.now(timezone.utc).strftime('%Y%m%d%H')}"
             release_id = ensure_release(tag)
             r = client.post(
-                f"https://api.github.com/repos/{STORAGE_REPO}/releases/{release_id}/assets"
+                f"https://uploads.github.com/repos/{STORAGE_REPO}/releases/{release_id}/assets"
                 f"?name={quote(f.name)}",
                 headers=GH,
                 files={"file": (f.name, f.read_bytes(), "application/octet-stream")},
@@ -322,7 +322,7 @@ def checkin_set(set_id: str, manifest: list) -> list:
                         break
                     pname = f"{f.name}.part{idx:03d}"
                     r = client.post(
-                        f"https://api.github.com/repos/{STORAGE_REPO}/releases/{release_id}/assets"
+                        f"https://uploads.github.com/repos/{STORAGE_REPO}/releases/{release_id}/assets"
                         f"?name={quote(pname)}",
                         headers=GH,
                         files={"file": (pname, chunk, "application/octet-stream")},

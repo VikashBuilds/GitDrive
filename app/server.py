@@ -116,7 +116,7 @@ def ensure_release(tag: str, repo: str) -> int:
 def release_upload(data: bytes, name: str, mime: str, tag: str, repo: str) -> str:
     release_id = ensure_release(tag, repo)
     r = _gh.post(
-        f"https://api.github.com/repos/{repo}/releases/{release_id}/assets?name={quote(name)}",
+        f"https://uploads.github.com/repos/{repo}/releases/{release_id}/assets?name={quote(name)}",
         headers=GH,
         files={"file": (name, data, mime or "application/octet-stream")},
     )
@@ -263,7 +263,7 @@ async def archive_part(file_id: str, index: int, file: UploadFile = File(...),
     release_id = ensure_release(tag, repo)
     pname = f"{name}.part{index:03d}"
     r = _gh.post(
-        f"https://api.github.com/repos/{repo}/releases/{release_id}/assets?name={quote(pname)}",
+        f"https://uploads.github.com/repos/{repo}/releases/{release_id}/assets?name={quote(pname)}",
         headers=GH,
         files={"file": (pname, data, "application/octet-stream")},
     )
