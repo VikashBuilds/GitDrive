@@ -32,7 +32,7 @@ jobs:
           import os, psycopg2
           conn = psycopg2.connect(os.environ["DB_URL"])
           cur = conn.cursor()
-          cur.execute("SELECT value FROM meta WHERE key = 'tunnel_url'")
+          cur.execute("SELECT v FROM meta WHERE k = 'tunnel_url'")
           row = cur.fetchone()
           print(f"API_URL={row[0] if row else ''}")
           cur.close(); conn.close()
