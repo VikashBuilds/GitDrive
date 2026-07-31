@@ -328,7 +328,7 @@ async def archive_complete(file_id: str, x_api_key: str = Header("")):
     size = sum(p["size"] for p in parts)
     url = f"/v1/download/{file_id}"
     cur.execute("UPDATE files SET status = 'ready', size = %s, url = %s, sha = %s WHERE id = %s",
-                (size, url, f"archive-{size}-{name}", file_id))
+                (size, url, f"archive-{file_id}-{name}", file_id))
     conn.commit()
     cur.close()
     conn.close()
