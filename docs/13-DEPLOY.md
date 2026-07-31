@@ -74,6 +74,25 @@ python scripts/upload_archive.py my-backup.iso \
 ## 7. Known honest limits (don't be surprised)
 
 - First cloudflared URL changes each deploy → re-update `tunnel_url` in DB.
+- **The tunnel URL rotates every ~6 min** (chain pattern: each run starts a new tunnel). Always read the URL from `meta` — the verify harness and carousel do this automatically.
 - Pool files on the *current* holder are 6h-ephemeral; only the anchors (git/release parts) are permanent — by design.
 - `release_delete_parts` needs the release tag intact; if a release was deleted manually, cleanup is skipped.
 - Verify-cycle covers upload/dedupe/archive/download; relay handoff needs a live chain to test end-to-end.
+
+## 8. Real deployment lessons (learned the hard way — live-run fixes)
+
+These were found while deploying for real; each is fixed in code but worth knowing:
+
+| Landmine | Symptom | Fix (now in code) |
+|---|---|---|
+| Release asset uploads to `api.github.com/.../assets` | **404 Not Found** | use `uploads.github.com/.../assets` |
+| Multipart `files=` on asset upload | asset stored WITH its multipart envelope (+200 B) — SHA mismatch | send **raw body** (`content=data` + Content-Type) |
+| Creating a Release on an **empty repo** | HTTP 422 "Repository is empty" | startup auto-seeds an init commit; `ensure_release` retries after seeding |
+| `/mnt/data` on hosted runners | **Permission denied** | use `/tmp/carousel-data` (env-overridable) |
+| `nodes` table missing `status`/`end_at` | supervisor crashes on `SELECT status` | added columns + heartbeat sets `status='active'` |
+| Archive sha `archive-<size>-<name>` | UNIQUE violation on repeated uploads → 500 | sha now includes the file id |
+| Free cloudflared tunnel drops rapid requests | random 520/530/HTML pages | verify harness retries 5xx/network errors |
+| `gh` token lacks `workflow` scope | pushes touching `.github/workflows/*` rejected | `gh auth refresh -s workflow` once |
+
+> [!TIP]
+> The `verify-cycle` workflow runs the full battery daily and fails loudly if any tier breaks — the tunnel rotation and flakiness are already handled inside it.
