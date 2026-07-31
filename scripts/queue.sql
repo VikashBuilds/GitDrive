@@ -49,7 +49,9 @@ CREATE TABLE IF NOT EXISTS nodes (
   instance TEXT DEFAULT '',                  -- current VM run id (GITHUB_RUN_ID)
   tunnel_url TEXT DEFAULT '',
   last_seen TIMESTAMPTZ DEFAULT now(),
-  sets_held INT NOT NULL DEFAULT 0
+  sets_held INT NOT NULL DEFAULT 0,
+  status TEXT DEFAULT 'active',              -- active | END
+  end_at TIMESTAMPTZ
 );
 
 CREATE TABLE IF NOT EXISTS sets (

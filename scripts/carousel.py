@@ -78,10 +78,10 @@ def register():
     conn.autocommit = True
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO nodes (node_id, instance, tunnel_url, last_seen, sets_held) "
-        "VALUES (%s, %s, %s, now(), 0) "
+        "INSERT INTO nodes (node_id, instance, tunnel_url, last_seen, sets_held, status) "
+        "VALUES (%s, %s, %s, now(), 0, 'active') "
         "ON CONFLICT (node_id) DO UPDATE SET instance = EXCLUDED.instance, "
-        "tunnel_url = EXCLUDED.tunnel_url, last_seen = now()",
+        "tunnel_url = EXCLUDED.tunnel_url, last_seen = now(), status = 'active'",
         (NODE_ID, INSTANCE, TUNNEL_URL),
     )
     cur.close()
@@ -93,7 +93,7 @@ def heartbeat():
     conn = db()
     conn.autocommit = True
     cur = conn.cursor()
-    cur.execute("UPDATE nodes SET last_seen = now() WHERE node_id = %s", (NODE_ID,))
+    cur.execute("UPDATE nodes SET last_seen = now(), status = 'active' WHERE node_id = %s", (NODE_ID,))
     cur.close()
     conn.close()
 
