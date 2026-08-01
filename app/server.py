@@ -192,13 +192,15 @@ def release_delete_parts(parts_json: str, tag: str, repo: str):
             _gh.delete(f"https://api.github.com/repos/{repo}/releases/assets/{asset['id']}", headers=GH)
 
 
-def enqueue_compress(file_id: str, size: int, mime: str, enc: bool = False):
+def enqueue_compress(file_id: str, size: int, mime: str, enc: bool = False, private: bool = False):
     if not mime:
         return
     if size < 200_000:
         return
     if enc:
         return  # ciphertext is opaque — compression would shred it
+    if private:
+        return  # private files must never be re-hosted in public storage
     if mime.startswith("image/") or mime.startswith("video/"):
         conn = db()
         conn.autocommit = True
@@ -221,6 +223,20 @@ def startup():
         git(["config", "user.email", "gitdrive@users.noreply.github.com"], repo)
         if not _repo_has_commits(repo):
             _seed_empty_repo(repo)
+    # Sweep: mark compress jobs skipped that can never be picked (the picker
+    # requires a public /files/ URL and <= 50 MB). Private/enc/big/pool files
+    # would otherwise sit in the queue forever.
+    conn = db()
+    conn.autocommit = True
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE jobs j SET status = 'skipped', updated_at = now() "
+        "FROM files f "
+        "WHERE j.type = 'compress' AND j.status = 'queued' AND f.id = j.target_id "
+        "AND (f.enc OR f.private OR f.size > 52428800 OR f.url NOT LIKE '%/files/%')"
+    )
+    cur.close()
+    conn.close()
 
 
 def _repo_has_commits(repo: str) -> bool:
@@ -668,7 +684,7 @@ def finalize_upload(name: str, mime: str, data_path: str, expires: datetime | No
         cur2.close()
         conn2.close()
 
-    enqueue_compress(fid, size, mime, enc)
+    enqueue_compress(fid, size, mime, enc, private)
     note = "queued for relay pool" if store == "pool" else None
     return {"id": fid, "name": name, "size": size, "mime": mime, "url": url,
             "deduped": False, "status": status, "note": note, "private": private, "enc": enc,
