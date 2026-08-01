@@ -120,3 +120,35 @@ Commands: `/stats`, `/files [n]`, `/file <id>`, `/delete <id>`, `/set <url>`, `/
 Notes:
 - Uploads >20 MB can't arrive through Telegram's own API; big files belong in the relay pool via `scripts/upload_chunked.py`.
 - If you ever post a token in chat, regenerate it in BotFather and re-set the secret.
+
+## 10. Control grid dashboard (GitHub Pages + custom domain)
+
+The dashboard is a static page served by GitHub Pages from `/docs` on `main`, and talks
+to the live API through the rotating tunnel (CORS is wide-open on purpose).
+
+| Step | Where | Result |
+|---|---|---|
+| `gh api repos/<owner>/<repo>/pages -X POST -f "source[branch]=main" -f "source[path]=/docs"` | CLI | Pages enabled, CNAME from `docs/CNAME` |
+| DNS: CNAME `gitdrive` → `<owner>.github.io` | registrar/Cloudflare | pages resolve |
+| Trigger `GitDrive Upload Service` once | Actions | `/v1/dashboard` + `/v1/dashboard/dispatch` go live |
+| Open `https://gitdrive.vikashbuilds.in`, save API base URL | browser | grid renders; save API key to unlock **Run** buttons |
+
+What it shows: files (id/name/size/store/status), the 20 sets + holders, node health, jobs,
+workflow history (last 5 runs per workflow) and per-workflow **Run** buttons.
+
+Notes:
+- The page tries all previously-seen tunnel URLs (kept in localStorage) and auto-adopts
+  new ones from `meta.tunnel_url` — it keeps working across tunnel rotation.
+- The API key lives only in the browser (localStorage) and is sent as `X-API-Key`;
+  the page itself is public.
+- Pages is served by Jekyll from `docs/` — keep `index.html` + `CNAME` at the root and
+  the `.md` runbooks are available as HTML under their filenames.
+- SSL certifies automatically once DNS points at GitHub; it can take up to an hour.
+
+## 11. A→B handoff for drained pool files
+
+Carousel nodes rotate every ~30 min, so a drained file sitting only on the drain node's
+disk dies with it. `drain_buffer_jobs()` now streams the reassembled file **directly to
+the set's current holder** (`PUT {holder_url}/v1/relay/recv/{set_id}/{name}` with
+`X-Relay-Token`); if the holder is unreachable it falls back to local disk. The holder's
+own check-in then anchors the file into storage permanently.
