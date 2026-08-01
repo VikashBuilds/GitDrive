@@ -373,6 +373,13 @@ def handle_document(chat_id: int, msg: dict):
         return "Hmm, I couldn't read that file."
     file_id = doc.get("file_id")
     name = doc.get("file_name") or "file.bin"
+    size_hint = doc.get("file_size") or 0
+    if size_hint > 20 * 1024 * 1024:
+        return (f"⚠️ This file is <b>{fmt_bytes(size_hint)}</b>, but Telegram only lets me "
+                f"receive files up to 20 MB — that's a Telegram limit, not GitDrive's.\n\n"
+                f"💡 <b>Big files:</b> open the dashboard and drag & drop the file there — "
+                f"it uploads up to 12 GB in chunks automatically:\n"
+                f"gitdrive.vikashbuilds.in")
     info = tg("getFile", file_id=file_id)
     if not info or not info.get("file_path"):
         return f"⚠️ Couldn't fetch the file from Telegram (it may be over 20 MB). Try again with a smaller file."

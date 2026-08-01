@@ -75,7 +75,7 @@
 </div>
 
 <div class="card">
-  <h2>Upload a file <span class="hint">— up to 100 MB here; bigger files: send them to the Telegram bot</span></h2>
+  <h2>Upload a file <span class="hint">— any size up to 12 GB; big files upload in chunks automatically</span></h2>
   <div class="drop" id="drop">Drop a file here, or click to choose one</div>
   <div class="inline"><span class="muted" id="upMsg"></span></div>
   <input type="file" id="fileInput" hidden>
@@ -268,6 +268,7 @@ async function dispatch(name){
 }
 
 async function uploadFile(file){
+  if(file.size > 90 * 1024 * 1024) return uploadBig(file);
   const msg = document.getElementById("upMsg");
   msg.textContent = "Uploading " + file.name + " (" + fmtBytes(file.size) + ")…";
   const fd = new FormData(); fd.append("file", file);
@@ -280,6 +281,53 @@ async function uploadFile(file){
     refresh();
   } catch(e){
     msg.textContent = "Upload failed: " + e.message;
+  }
+}
+
+async function uploadBig(file){
+  const msg = document.getElementById("upMsg");
+  const CH = 64 * 1024 * 1024; // 64 MB chunks — under the tunnel's 100 MB cap
+  const q = new URLSearchParams({name: file.name, total_size: file.size, mime: file.type || ""});
+  let fid;
+  try {
+    const d = await tryFetch(base + "/v1/upload/start?" + q, {method:"POST", headers: headers()});
+    fid = d.id;
+  } catch(e){ msg.textContent = "Upload failed to start: " + e.message; return; }
+  let off = 0;
+  try {
+    while(off < file.size){
+      const blob = file.slice(off, Math.min(off + CH, file.size));
+      const res = await fetch(base + "/v1/upload/chunk/" + fid + "?offset=" + off, {method:"POST", headers: headers(), body: blob});
+      if(!res.ok){
+        let detail = "";
+        try { detail = (await res.json()).detail || ""; } catch(e2){}
+        if(res.status === 409 && detail.indexOf("offset mismatch") === 0){
+          off = parseInt(detail.split(" ").pop(), 10) || off;
+          continue;
+        }
+        throw new Error("chunk at " + fmtBytes(off) + ": " + (detail || res.status));
+      }
+      off += blob.size;
+      const pct = Math.round(off / file.size * 100);
+      msg.textContent = "Uploading " + file.name + " — " + fmtBytes(off) + " of " + fmtBytes(file.size) + " (" + pct + "%)";
+    }
+    await tryFetch(base + "/v1/upload/complete/" + fid, {method:"POST", headers: headers()});
+    msg.textContent = "Uploaded " + fmtBytes(file.size) + " — GitDrive is finalizing (a few minutes)…";
+    for(let i = 0; i < 120; i++){
+      await new Promise(r => setTimeout(r, 5000));
+      try {
+        const f = await tryFetch(base + "/v1/file/" + fid, {headers: headers()});
+        if(f.status === "ready"){
+          msg.textContent = "";
+          toast("Uploaded ✔ <a href='" + f.url + "'>" + f.name + "</a> — " + fmtBytes(f.size), 9000);
+          refresh(); return;
+        }
+      } catch(e){}
+    }
+    msg.textContent = "Upload finished — still finalizing in the background; it will appear in Your files shortly.";
+    refresh();
+  } catch(e){
+    msg.textContent = "Upload failed: " + e.message + " (you can retry — safe to drop the file again)";
   }
 }
 
