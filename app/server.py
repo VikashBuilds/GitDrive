@@ -13,7 +13,7 @@ from urllib.parse import quote
 import httpx
 import psycopg2
 import uvicorn
-from fastapi import BackgroundTasks, FastAPI, File, Header, HTTPException, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 
@@ -641,8 +641,8 @@ def finalize_upload(name: str, mime: str, data_path: str, expires: datetime | No
 
 
 @app.post("/v1/upload")
-async def upload(file: UploadFile = File(...), private: bool = False,
-                 x_api_key: str = Header(""), expire_days: int | None = None):
+async def upload(file: UploadFile = File(...), private: bool = Form(False),
+                 x_api_key: str = Header(""), expire_days: int | None = Form(None)):
     check_key(x_api_key, need="upload")
     name = re.sub(r"[^A-Za-z0-9._-]", "_", file.filename or "file")
     ext = os.path.splitext(name)[1].lower()
