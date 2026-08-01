@@ -9,10 +9,13 @@
 | `GET /v1/download/{id}` (private file) | `X-API-Key` header; otherwise 401 |
 | `GET /v1/file/{id}`, `/v1/files`, `/v1/stats`, `/v1/health`, public downloads | Public (links are meant to be shareable) |
 
-**Key scopes** — keys in `GITDRIVE_API_KEYS` may carry a scope suffix:
+**Key scopes** — keys in the `GITDRIVE_API_KEYS` secret may carry a scope suffix
+(`key:scope`). Clients send just the key name (no suffix):
 
-- `key-vikash` → **admin**: everything (upload, delete, dispatch)
-- `key-bot:upload` → **upload-only**: cannot delete files or dispatch workers (403)
+| Secret entry | Client sends | Powers |
+|---|---|---|
+| `key-vikash` | `key-vikash` | **admin**: upload, delete, dispatch |
+| `key-bot:upload` | `key-bot` | **upload-only**: cannot delete files or dispatch workers (403) |
 
 - Keys are stored in GitHub Secrets only — never in code or repos
 - Rotate by editing the secret; multiple comma-separated keys allowed (one per app/bot)

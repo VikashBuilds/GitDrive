@@ -4,7 +4,10 @@ Base URL: `https://drive.vikashbuilds.in` (Cloudflare tunnel → the 24/7 runner
 
 Auth: `X-API-Key: <key>` header on all write endpoints (see `06-SECURITY.md`).
 
-Keys can be scoped: `key:upload` (upload-only) or plain `key` (admin — upload, delete, dispatch). Send `private=true` (form field or query param) to store the file privately.
+Keys can be scoped in the secret config (`key:scope`); the client always sends
+just the key name — `key:upload` → send `key` (upload-only), plain keys are
+admin (upload, delete, dispatch). Send `private=true` (form field or query
+param) to store the file privately.
 
 ---
 
