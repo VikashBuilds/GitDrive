@@ -7,13 +7,14 @@ import time
 import uuid
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
+import traceback
 from urllib.parse import quote
 
 import httpx
 import psycopg2
 import uvicorn
 from fastapi import FastAPI, File, Header, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 
 DB_URL = os.environ["DB_URL"]
 API_KEYS = [k.strip() for k in os.environ.get("API_KEYS", "").split(",") if k.strip()]
@@ -39,6 +40,14 @@ BLOCKED_EXT = {".exe", ".sh", ".bat", ".cmd", ".htm", ".html", ".svg", ".js", ".
 BLOCKED_MIME = {"text/html", "application/x-msdownload", "application/x-sh"}
 
 app = FastAPI(title="GitDrive API")
+
+
+@app.exception_handler(Exception)
+async def unhandled(request: Request, exc: Exception):
+    traceback.print_exc()
+    return JSONResponse({"error": str(exc)}, status_code=500)
+
+
 _uploads = defaultdict(deque)
 _gh = httpx.Client(timeout=300)
 _gh_async = httpx.AsyncClient(timeout=600, follow_redirects=True)
@@ -500,8 +509,8 @@ async def upload_start(name: str, total_size: int, mime: str = "", x_api_key: st
         raise HTTPException(400, "total_size must be positive")
     fid = uuid.uuid4().hex[:12]
     os.makedirs(BUFFER_DIR, exist_ok=True)
-    with open(os.path.join(BUFFER_DIR, f"{fid}.up"), "wb") as fh:
-        fh.truncate(total_size)
+    with open(os.path.join(BUFFER_DIR, f"{fid}.up"), "wb"):
+        pass
     with open(os.path.join(BUFFER_DIR, f"{fid}.meta"), "w") as fh:
         json.dump({"name": safe, "mime": mime or "", "total_size": total_size, "created": time.time()}, fh)
     return {"id": fid, "total_size": total_size}
