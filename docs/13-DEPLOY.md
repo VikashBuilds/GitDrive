@@ -106,3 +106,17 @@ These were found while deploying for real; each is fixed in code but worth knowi
 
 > [!TIP]
 > The `verify-cycle` workflow runs the full battery daily and fails loudly if any tier breaks — the tunnel rotation and flakiness are already handled inside it.
+
+## 9. Telegram bot (upload + status)
+
+| Step | Where | Result |
+|---|---|---|
+| Create bot via `@BotFather` → `/newbot` | Telegram | `TELEGRAM_BOT_TOKEN` |
+| `gh secret set TELEGRAM_BOT_TOKEN -R <repo>` | CLI | secret |
+| `gh workflow run "Telegram Bot" -R <repo>` | CLI | 50-min polling shift, self-chains + hourly cron fallback |
+
+Commands: `/stats`, `/files [n]`, `/file <id>`, `/delete <id>`, `/set <url>`, `/key <key>`. Sending a document uploads it (≤100 MB via the API) and replies with the URL. The bot auto-discovers the tunnel from the DB (`meta.tunnel_url`) and falls back to a manual `/set` override (`meta.api_base_url`).
+
+Notes:
+- Uploads >20 MB can't arrive through Telegram's own API; big files belong in the relay pool via `scripts/upload_chunked.py`.
+- If you ever post a token in chat, regenerate it in BotFather and re-set the secret.
