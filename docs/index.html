@@ -6,161 +6,333 @@
 <meta http-equiv="Content-Security-Policy" content="upgrade-insecure-requests">
 <title>GitDrive — My Storage Dashboard</title>
 <style>
-  :root { --bg:#0b0f14; --panel:#131a22; --line:#1f2a35; --txt:#e6edf5; --dim:#8b9cae;
-          --ok:#34d399; --okbg:#0c3a2c; --warn:#fbbf24; --warnbg:#3a2f0c; --bad:#f87171; --badbg:#3a1212;
-          --acc:#38bdf8; --accbg:#0e2f42; }
-  * { box-sizing:border-box; margin:0; padding:0; }
-  body { background:var(--bg); color:var(--txt); font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; padding:20px; max-width:1100px; margin:0 auto; }
-  a { color:var(--acc); text-decoration:none; } a:hover { text-decoration:underline; }
-  header { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:14px; }
-  h1 { font-size:22px; font-weight:700; } h1 .dot { color:var(--ok); }
-  .statusline { margin-left:auto; font-size:13px; color:var(--dim); display:flex; align-items:center; gap:8px; }
-  .pill { padding:4px 12px; border-radius:999px; font-size:12px; font-weight:600; }
-  .pill.ok { background:var(--okbg); color:var(--ok); } .pill.bad { background:var(--badbg); color:var(--bad); } .pill.warn { background:var(--warnbg); color:var(--warn); }
-  .banner { border-radius:12px; padding:14px 18px; margin-bottom:16px; font-size:15px; font-weight:600; display:none; }
-  .banner.ok { background:var(--okbg); color:var(--ok); } .banner.warn { background:var(--warnbg); color:var(--warn); } .banner.bad { background:var(--badbg); color:var(--bad); }
-  .banner small { font-weight:400; display:block; margin-top:3px; opacity:.9; }
-  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:14px; margin-bottom:16px; }
-  .stat { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px; }
-  .stat .lbl { font-size:12px; text-transform:uppercase; letter-spacing:.8px; color:var(--dim); }
-  .stat .val { font-size:30px; font-weight:700; margin-top:4px; }
-  .stat .sub { font-size:12px; color:var(--dim); margin-top:2px; }
-  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:18px; margin-bottom:16px; }
-  .card h2 { font-size:15px; font-weight:700; margin-bottom:12px; }
-  .card h2 .hint { font-weight:400; font-size:12px; color:var(--dim); }
-  .drop { border:2px dashed var(--line); border-radius:10px; padding:22px; text-align:center; color:var(--dim); cursor:pointer; transition:.15s; }
-  .drop.over, .drop:hover { border-color:var(--acc); color:var(--txt); }
-  .seg { display:inline-flex; gap:6px; margin-bottom:10px; }
-  .segbtn { padding:6px 14px; font-size:13px; border-radius:8px; border:1px solid var(--line); background:#0d141b; color:var(--dim); }
-  .segbtn.on { background:var(--accbg); border-color:#1e4a63; color:var(--acc); }
-  .segbtn.on.priv { background:var(--warnbg); border-color:#6b5a1e; color:var(--warn); }
-  input[type=text], input[type=password] { background:#0d141b; border:1px solid var(--line); color:var(--txt); padding:8px 10px; border-radius:8px; font:inherit; }
-  button { background:var(--accbg); border:1px solid #1e4a63; color:var(--acc); padding:8px 14px; border-radius:8px; cursor:pointer; font:inherit; font-weight:600; }
-  button:hover { border-color:var(--acc); }
-  button:disabled { opacity:.4; cursor:not-allowed; }
-  button.danger { background:var(--badbg); border-color:#5b2020; color:var(--bad); }
-  button.small { padding:4px 10px; font-size:13px; border-radius:6px; }
-  .row { display:flex; align-items:center; gap:10px; padding:9px 4px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
-  .row:last-child { border-bottom:none; }
-  .fname { font-weight:600; word-break:break-all; }
-  .fmeta { font-size:12px; color:var(--dim); }
-  .acts { margin-left:auto; display:flex; gap:6px; flex-wrap:wrap; }
-  .chip { display:inline-block; padding:2px 10px; border-radius:999px; font-size:11px; font-weight:600; }
-  .chip.ok { background:var(--okbg); color:var(--ok); } .chip.warn { background:var(--warnbg); color:var(--warn); } .chip.bad { background:var(--badbg); color:var(--bad); }
-  .worker { display:flex; align-items:center; gap:12px; padding:10px 4px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
-  .worker:last-child { border-bottom:none; }
-  .wname { font-weight:600; min-width:180px; }
-  .wdesc { font-size:12px; color:var(--dim); }
-  .wlast { font-size:12px; color:var(--dim); margin-left:auto; }
-  details { margin-top:8px; } summary { cursor:pointer; color:var(--dim); font-size:13px; }
-  pre { background:#0a0e13; border:1px solid var(--line); border-radius:8px; padding:12px; overflow:auto; font-size:12px; color:var(--dim); margin-top:8px; max-height:400px; }
-  .toast { position:fixed; bottom:20px; right:20px; background:#0d141b; border:1px solid var(--line); border-radius:10px; padding:12px 16px; font-size:14px; box-shadow:0 8px 24px rgba(0,0,0,.5); display:none; max-width:380px; }
-  .toast a { font-weight:600; }
-  .empty { color:var(--dim); padding:14px 4px; font-size:14px; }
-  .inline { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:10px; }
-  .muted { color:var(--dim); }
-  .keyring { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:10px; }
-  .keyring input[type=password] { width:280px; }
-  .gate { position:fixed; inset:0; background:rgba(5,8,12,.92); display:flex; align-items:center; justify-content:center; z-index:50; }
-  .gatecard { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:26px; width:min(420px, 92vw); }
-  .gatecard h2 { font-size:18px; margin-bottom:4px; }
-  .gatecard p { color:var(--dim); font-size:13px; margin-bottom:14px; }
-  .gatecard input { width:100%; margin-bottom:10px; background:#0d141b; border:1px solid var(--line); color:var(--txt); padding:10px 12px; border-radius:8px; font:inherit; }
-  .gatecard .rowbtn { display:flex; gap:8px; margin-top:4px; }
-  .gatecard .rowbtn button { flex:1; }
-  .gatebad { color:var(--bad); font-size:13px; min-height:18px; margin-bottom:6px; }
-  .hintline { font-size:12px; color:var(--dim); margin-top:8px; line-height:1.5; }
-  .lockpill { background:var(--warnbg); color:var(--warn); border:1px solid #6b5a1e; border-radius:999px; padding:2px 10px; font-size:11px; font-weight:600; cursor:pointer; }
-  @media (max-width:700px){ .wlast, .acts { margin-left:0; } }
+  :root{
+    --bg:#070b11; --bg2:#0a0f16; --panel:#101622; --panel2:#0c1119;
+    --line:rgba(148,163,184,.13); --line-strong:rgba(148,163,184,.22);
+    --txt:#e8eef6; --dim:#8fa0b4; --faint:#5d6c80;
+    --acc:#3fa9ff; --acc-soft:rgba(63,169,255,.13); --acc-line:rgba(63,169,255,.45);
+    --ok:#34d399; --ok-soft:rgba(52,211,153,.12); --ok-line:rgba(52,211,153,.4);
+    --warn:#fbbf24; --warn-soft:rgba(251,191,36,.12); --warn-line:rgba(251,191,36,.4);
+    --bad:#fb7185; --bad-soft:rgba(251,113,133,.12); --bad-line:rgba(251,113,133,.4);
+    --r-sm:8px; --r-md:12px; --r-lg:16px;
+    --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px; --s6:32px; --s7:48px;
+    --shadow-1:0 1px 2px rgba(0,0,0,.4); --shadow-2:0 10px 28px rgba(0,0,0,.5);
+    --font:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    --mono:ui-monospace,SFMono-Regular,"Cascadia Code",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scrollbar-color:var(--line-strong) transparent}
+  body{background:var(--bg);color:var(--txt);font:15px/1.55 var(--font);
+       background-image:radial-gradient(1200px 500px at 70% -10%,rgba(63,169,255,.07),transparent 60%),
+                        radial-gradient(900px 400px at 0% 0%,rgba(52,211,153,.04),transparent 55%);
+       background-attachment:fixed; min-height:100vh; padding:0 20px 64px;}
+  a{color:var(--acc);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{max-width:1060px;margin:0 auto}
+
+  /* ---------- header ---------- */
+  header{position:sticky;top:0;z-index:40;background:rgba(7,11,17,.82);backdrop-filter:blur(10px);
+         -webkit-backdrop-filter:blur(10px);border-bottom:1px solid var(--line);margin:0 -20px 0;padding:0 20px;}
+  .hdrow{max-width:1060px;margin:0 auto;display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:12px 0}
+  h1{font-size:19px;font-weight:750;letter-spacing:-.02em}
+  h1 .dot{color:var(--ok)}
+  .tag{font-size:12px;color:var(--faint);margin-left:4px;font-weight:400}
+  .statusline{margin-left:auto;display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12.5px;color:var(--dim)}
+  .pill{display:inline-flex;align-items:center;gap:6px;padding:3px 11px;border-radius:999px;font-size:11.5px;font-weight:650;border:1px solid transparent}
+  .pill::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+  .pill.ok{background:var(--ok-soft);color:var(--ok);border-color:var(--ok-line)}
+  .pill.warn{background:var(--warn-soft);color:var(--warn);border-color:var(--warn-line)}
+  .pill.bad{background:var(--bad-soft);color:var(--bad);border-color:var(--bad-line)}
+  .lockpill{background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-line);border-radius:999px;
+            padding:3px 11px;font-size:11.5px;font-weight:650;cursor:pointer;transition:.15s}
+  .lockpill:hover{background:var(--warn)}
+  .lockpill:hover{color:#1a1204}
+
+  /* ---------- layout ---------- */
+  main{padding-top:var(--s6)}
+  .banner{border-radius:var(--r-md);padding:13px 18px;margin-bottom:var(--s5);font-size:14.5px;font-weight:600;display:none;border:1px solid transparent}
+  .banner.ok{background:var(--ok-soft);color:var(--ok);border-color:var(--ok-line)}
+  .banner.warn{background:var(--warn-soft);color:var(--warn);border-color:var(--warn-line)}
+  .banner.bad{background:var(--bad-soft);color:var(--bad);border-color:var(--bad-line)}
+  .banner small{font-weight:400;display:block;margin-top:2px;opacity:.85;font-size:12.5px}
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px;margin-bottom:var(--s5)}
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);padding:16px 18px;transition:border-color .15s}
+  .stat:hover{border-color:var(--line-strong)}
+  .stat .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.09em;color:var(--faint);font-weight:650}
+  .stat .val{font-size:27px;font-weight:750;letter-spacing:-.02em;margin-top:4px;font-variant-numeric:tabular-nums}
+  .stat .sub{font-size:12px;color:var(--dim);margin-top:2px}
+
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);padding:20px;margin-bottom:var(--s5);
+        box-shadow:var(--shadow-1)}
+  .cardhead{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+  .card h2{font-size:15.5px;font-weight:750;letter-spacing:-.01em}
+  .card h2 .hint{font-weight:400;font-size:12.5px;color:var(--faint);margin-left:6px}
+  .subrow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+
+  /* ---------- buttons & inputs ---------- */
+  button{background:var(--panel2);border:1px solid var(--line-strong);color:var(--txt);padding:8px 15px;border-radius:var(--r-sm);
+         cursor:pointer;font:inherit;font-weight:650;font-size:13.5px;transition:background .12s,border-color .12s,color .12s,opacity .12s}
+  button:hover{border-color:var(--acc);color:var(--acc)}
+  button:active{transform:translateY(1px)}
+  button:disabled{opacity:.38;cursor:not-allowed;transform:none}
+  button:disabled:hover{border-color:var(--line-strong);color:var(--txt)}
+  button.small{padding:4px 10px;font-size:12.5px;border-radius:6px;font-weight:600}
+  button.primary{background:var(--acc-soft);border-color:var(--acc-line);color:var(--acc)}
+  button.primary:hover{background:var(--acc);border-color:var(--acc);color:#05121f}
+  button.danger{background:var(--bad-soft);border-color:var(--bad-line);color:var(--bad)}
+  button.danger:hover{background:var(--bad);border-color:var(--bad);color:#1f0509}
+  button.ghost{background:transparent;border-color:transparent;color:var(--dim)}
+  button.ghost:hover{color:var(--txt);border-color:var(--line-strong)}
+  input[type=text],input[type=password],input[type=search]{background:var(--panel2);border:1px solid var(--line-strong);color:var(--txt);
+      padding:9px 12px;border-radius:var(--r-sm);font:inherit;font-size:13.5px;outline:none;transition:border-color .12s,box-shadow .12s}
+  input:focus{outline:none;border-color:var(--acc);box-shadow:0 0 0 3px var(--acc-soft)}
+  input::placeholder{color:var(--faint)}
+  :focus-visible{outline:2px solid var(--acc);outline-offset:2px;border-radius:4px}
+
+  /* ---------- upload ---------- */
+  .seg{display:inline-flex;gap:4px;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:3px}
+  .segbtn{padding:6px 14px;font-size:12.5px;border-radius:7px;border:none;background:transparent;color:var(--dim);font-weight:650}
+  .segbtn:hover{border:none;color:var(--txt)}
+  .segbtn.on{background:var(--acc-soft);color:var(--acc)}
+  .segbtn.on.priv{background:var(--warn-soft);color:var(--warn)}
+  .drop{border:2px dashed var(--line-strong);border-radius:var(--r-md);padding:30px 20px;text-align:center;color:var(--faint);
+        cursor:pointer;transition:.15s;background:var(--panel2)}
+  .drop:hover,.drop.over{border-color:var(--acc);color:var(--txt);background:var(--acc-soft)}
+  .drop .dicon{font-size:26px;display:block;margin-bottom:8px}
+  .drop .dmain{font-size:14.5px;font-weight:650;color:var(--dim)}
+  .drop.over .dmain,.drop:hover .dmain{color:var(--txt)}
+  .drop .dsub{font-size:12px;margin-top:3px}
+  #queue{margin-top:14px;display:flex;flex-direction:column;gap:10px}
+  .uq{background:var(--panel2);border:1px solid var(--line);border-radius:var(--r-md);padding:12px 14px}
+  .uqtop{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+  .uqname{font-weight:650;font-size:13.5px;word-break:break-all;min-width:0;flex:1}
+  .uqstat{font-size:12px;font-weight:650;white-space:nowrap}
+  .uqstat.ok{color:var(--ok)} .uqstat.warn{color:var(--warn)} .uqstat.bad{color:var(--bad)} .uqstat.dim{color:var(--faint)}
+  .pbar{height:6px;background:rgba(148,163,184,.12);border-radius:999px;overflow:hidden}
+  .pfill{height:100%;width:0;border-radius:999px;background:linear-gradient(90deg,var(--acc),#7cc0ff);transition:width .25s ease}
+  .pfill.ok{background:linear-gradient(90deg,var(--ok),#6ee7b7)}
+  .pfill.bad{background:var(--bad)}
+  .uqsub{display:flex;align-items:center;gap:10px;margin-top:7px;font-size:12px;color:var(--faint)}
+  .uqsub .btn{color:var(--bad);background:none;border:none;font-size:12px;cursor:pointer;font-weight:650;margin-left:auto;padding:2px 4px}
+  .uqsub .btn:hover{text-decoration:underline;color:var(--bad)}
+
+  /* ---------- files ---------- */
+  .toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+  .toolbar .grow{flex:1}
+  .toolbar input{width:min(320px,100%)}
+  select{background:var(--panel2);border:1px solid var(--line-strong);color:var(--txt);padding:8px 10px;border-radius:var(--r-sm);
+         font:inherit;font-size:13px;outline:none}
+  .chips{display:inline-flex;gap:4px;flex-wrap:wrap}
+  .chipbtn{padding:5px 12px;font-size:12px;border-radius:999px;border:1px solid var(--line);background:transparent;color:var(--dim);font-weight:600;cursor:pointer;transition:.12s}
+  .chipbtn:hover{color:var(--txt);border-color:var(--line-strong)}
+  .chipbtn.on{background:var(--acc-soft);border-color:var(--acc-line);color:var(--acc)}
+  .chipbtn.on.priv{background:var(--warn-soft);border-color:var(--warn-line);color:var(--warn)}
+  .chipbtn.on.enc{background:var(--ok-soft);border-color:var(--ok-line);color:var(--ok)}
+  .frow{display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;gap:12px;align-items:center;padding:11px 8px;
+        border-bottom:1px solid var(--line);transition:background .12s}
+  .frow:last-child{border-bottom:none}
+  .frow:hover{background:rgba(148,163,184,.04)}
+  .ficon{width:38px;height:38px;border-radius:10px;background:var(--panel2);border:1px solid var(--line);
+         display:flex;align-items:center;justify-content:center;font-size:17px}
+  .fmain{min-width:0}
+  .fname{font-weight:650;font-size:14px;word-break:break-all;line-height:1.3}
+  .fmeta{font-size:12px;color:var(--faint);margin-top:2px;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+  .meta{display:inline-flex;align-items:center;gap:5px}
+  .tag2{font-size:10.5px;font-weight:700;padding:1px 7px;border-radius:999px;text-transform:uppercase;letter-spacing:.04em}
+  .tag2.priv{background:var(--warn-soft);color:var(--warn)}
+  .tag2.enc{background:var(--ok-soft);color:var(--ok)}
+  .tag2.store{background:rgba(148,163,184,.1);color:var(--dim)}
+  .tag2.exp{background:rgba(168,85,247,.12);color:#c084fc}
+  .chip{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:999px;font-size:11px;font-weight:650;border:1px solid transparent}
+  .chip::before{content:"";width:5px;height:5px;border-radius:50%;background:currentColor}
+  .chip.ok{background:var(--ok-soft);color:var(--ok);border-color:var(--ok-line)}
+  .chip.warn{background:var(--warn-soft);color:var(--warn);border-color:var(--warn-line)}
+  .chip.bad{background:var(--bad-soft);color:var(--bad);border-color:var(--bad-line)}
+  .chip.pulse::before{animation:pulse 1.4s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+  .acts{display:flex;gap:6px}
+  @media (max-width:720px){.frow{grid-template-columns:auto minmax(0,1fr) auto;}.frow .chip{display:none}.acts{grid-column:2/-1}}
+
+  /* ---------- workers ---------- */
+  .worker{display:flex;align-items:center;gap:12px;padding:11px 8px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+  .worker:last-child{border-bottom:none}
+  .worker:hover{background:rgba(148,163,184,.04)}
+  .wicon{width:34px;height:34px;border-radius:9px;background:var(--panel2);border:1px solid var(--line);
+         display:flex;align-items:center;justify-content:center;font-size:15px}
+  .wname{font-weight:650;font-size:13.5px}
+  .wdesc{font-size:12px;color:var(--faint)}
+  .wlast{font-size:12px;color:var(--faint);margin-left:auto}
+
+  details{margin-top:6px}
+  summary{cursor:pointer;color:var(--dim);font-size:13px;font-weight:600;padding:6px 0;user-select:none}
+  summary:hover{color:var(--txt)}
+  pre{background:var(--bg2);border:1px solid var(--line);border-radius:var(--r-sm);padding:14px;overflow:auto;
+      font:12px/1.6 var(--mono);color:var(--dim);margin-top:10px;max-height:420px}
+  .keyring{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px}
+  .keyring input[type=password]{width:280px}
+  .hintline{font-size:12px;color:var(--faint);margin-top:10px;line-height:1.6}
+  .muted{color:var(--faint)}
+
+  /* ---------- toast ---------- */
+  .toast{position:fixed;bottom:22px;right:22px;z-index:60;background:#0e1521;border:1px solid var(--line-strong);
+         border-radius:var(--r-md);padding:13px 16px;font-size:13.5px;box-shadow:var(--shadow-2);display:none;
+         max-width:400px;line-height:1.45}
+  .toast a{font-weight:700}
+
+  /* ---------- gate ---------- */
+  .gate{position:fixed;inset:0;background:rgba(4,7,11,.94);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);
+        display:flex;align-items:center;justify-content:center;z-index:70}
+  .gatecard{background:var(--panel);border:1px solid var(--line-strong);border-radius:var(--r-lg);padding:30px;
+            width:min(430px,94vw);box-shadow:var(--shadow-2)}
+  .gatecard .lock{font-size:34px;text-align:center;margin-bottom:10px}
+  .gatecard h2{font-size:19px;text-align:center;letter-spacing:-.01em}
+  .gatecard p{color:var(--dim);font-size:13px;text-align:center;margin:6px 0 18px;line-height:1.55}
+  .gatecard input{width:100%;margin-bottom:10px}
+  .gatebad{color:var(--bad);font-size:13px;min-height:18px;margin-bottom:6px;text-align:center}
+  .rowbtn{display:flex;gap:8px}
+  .rowbtn button{flex:1}
+
+  /* ---------- skeleton ---------- */
+  .sk{background:linear-gradient(90deg,rgba(148,163,184,.07),rgba(148,163,184,.14),rgba(148,163,184,.07));
+      background-size:200% 100%;animation:shimmer 1.3s infinite;border-radius:8px}
+  @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+  .skrow{display:flex;gap:12px;padding:12px 8px;border-bottom:1px solid var(--line)}
+  .skrow .sq{width:38px;height:38px;flex:none}
+  .skrow .ln{height:12px;width:60%}
+  .skrow .ln2{height:10px;width:35%;margin-top:7px}
+  .empty{color:var(--faint);padding:26px 8px;font-size:13.5px;text-align:center;line-height:1.6}
+  .empty .eico{font-size:28px;display:block;margin-bottom:8px}
+
+  @media (max-width:700px){
+    body{padding:0 12px 48px}
+    header{margin:0 -12px 0;padding:0 12px}
+    .stats{grid-template-columns:repeat(2,1fr);gap:10px}
+    .statusline{margin-left:0;width:100%}
+  }
+  @media (prefers-reduced-motion:reduce){
+    *,*::before,*::after{animation-duration:.01ms !important;transition-duration:.01ms !important}
+  }
 </style>
 </head>
 <body>
 <div class="gate" id="gate">
   <div class="gatecard">
-    <h2>🔒 GitDrive is locked</h2>
-    <p>This is your private dashboard — enter your API key to open it. Optionally set a master password to enable end-to-end encryption.</p>
-    <input type="password" id="gateKey" placeholder="API key (the one from Advanced settings)">
-    <input type="password" id="gatePass" placeholder="Master password (optional — enables E2E encryption)">
+    <div class="lock">🔒</div>
+    <h2>GitDrive is locked</h2>
+    <p>This is your private dashboard. Enter your API key to open it — optionally set a master password to enable end-to-end encryption for new uploads.</p>
+    <input type="password" id="gateKey" placeholder="API key" autocomplete="off">
+    <input type="password" id="gatePass" placeholder="Master password (optional — enables E2E encryption)" autocomplete="new-password">
     <div class="gatebad" id="gateErr"></div>
-    <div class="rowbtn">
-      <button onclick="unlock()">Unlock</button>
-    </div>
-    <div class="hintline">Encryption: files are encrypted in your browser before upload (AES-256). <b>Never lose the master password — it can't be recovered.</b> Unlocked keys live only in this tab.</div>
+    <div class="rowbtn"><button class="primary" onclick="unlock()">Unlock</button></div>
+    <div class="hintline">Encrypted files (🔐) are encrypted in your browser before upload (AES-256-GCM). <b>Never lose the master password — it can't be recovered.</b> Keys live only in this tab.</div>
   </div>
 </div>
 
+<div class="wrap">
 <header>
-  <h1>GitDrive <span class="dot">●</span></h1>
-  <div class="statusline"><span id="updated">connecting…</span><span class="pill ok" id="livePill">connecting</span><span class="lockpill" id="lockPill" style="display:none" onclick="lockE2E()" title="Click to lock (clears encryption keys from this tab)">🔐 E2E unlocked</span></div>
+  <div class="hdrow">
+    <h1>GitDrive <span class="dot">●</span><span class="tag">private storage</span></h1>
+    <div class="statusline">
+      <span id="updated">connecting…</span>
+      <span class="pill ok" id="livePill">connecting</span>
+      <span class="lockpill" id="lockPill" style="display:none" onclick="lockE2E()" title="Clears encryption keys from this tab">🔐 E2E unlocked</span>
+    </div>
+  </div>
 </header>
 
-<div class="banner" id="banner"></div>
+<main>
+  <div class="banner" id="banner"></div>
 
-<div class="stats">
-  <div class="stat"><div class="lbl">Files stored</div><div class="val" id="sFiles">–</div><div class="sub" id="sDel"></div></div>
-  <div class="stat"><div class="lbl">Storage used</div><div class="val" id="sBytes">–</div><div class="sub">across 5 GitHub repositories</div></div>
-  <div class="stat"><div class="lbl">Machines working</div><div class="val" id="sNodes">–</div><div class="sub" id="sNodeSub">background pool nodes</div></div>
-  <div class="stat"><div class="lbl">Pending tasks</div><div class="val" id="sJobs">–</div><div class="sub">queued in the pipeline</div></div>
-</div>
-
-<div class="card">
-  <h2>Upload a file <span class="hint">— any size up to 12 GB; big files upload in chunks automatically</span></h2>
-  <div class="seg">
-    <button id="visPub" class="segbtn on" title="Anyone with the link can download">🌍 Public</button>
-    <button id="visPriv" class="segbtn" title="Stored privately; download needs your API key">🔒 Private</button>
+  <div class="stats" id="stats">
+    <div class="stat"><div class="lbl">Files stored</div><div class="val" id="sFiles">–</div><div class="sub" id="sDel"></div></div>
+    <div class="stat"><div class="lbl">Storage used</div><div class="val" id="sBytes">–</div><div class="sub">across GitHub repos</div></div>
+    <div class="stat"><div class="lbl">Pool nodes</div><div class="val" id="sNodes">–</div><div class="sub" id="sNodeSub">background workers</div></div>
+    <div class="stat"><div class="lbl">Pending tasks</div><div class="val" id="sJobs">–</div><div class="sub">in the pipeline</div></div>
   </div>
-  <div class="drop" id="drop">Drop a file here, or click to choose one</div>
-  <div class="inline"><span class="muted" id="upMsg"></span></div>
-  <input type="file" id="fileInput" hidden>
-</div>
 
-<div class="card">
-  <h2>Your files</h2>
-  <input type="text" id="search" placeholder="Search by name…" style="width:100%; margin-bottom:10px">
-  <div id="files"><div class="empty">loading…</div></div>
-</div>
-
-<div class="card">
-  <h2>Background workers <span class="hint">— these run automatically</span></h2>
-  <div id="workers"></div>
-</div>
-
-<details id="adv">
-  <summary>Advanced — raw status, nodes, sets &amp; connection settings</summary>
-  <div class="keyring">
-    <input type="text" id="apiBase" placeholder="API URL" value="https://api.vikashbuilds.in">
-    <input type="password" id="apiKey" placeholder="API key (for Delete / Run buttons)">
-    <button onclick="saveSettings()">Save</button>
+  <div class="card">
+    <div class="cardhead">
+      <h2>Upload a file <span class="hint">any size up to 12 GB — big files upload in chunks</span></h2>
+      <div class="seg" id="visSeg">
+        <button id="visPub" class="segbtn on" title="Anyone with the link can download">🌍 Public</button>
+        <button id="visPriv" class="segbtn" title="Stored privately; downloads need your API key">🔒 Private</button>
+      </div>
+    </div>
+    <div class="drop" id="drop" role="button" tabindex="0" aria-label="Upload files — drop a file here or click to choose">
+      <span class="dicon">⬆️</span>
+      <span class="dmain">Drop files here or click to choose</span>
+      <span class="dsub">Multiple files supported — they upload one after another</span>
+    </div>
+    <input type="file" id="fileInput" multiple hidden>
+    <div id="queue"></div>
   </div>
-  <div id="sets"></div>
-  <pre id="raw">…</pre>
-</details>
 
-<div class="toast" id="toast"></div>
+  <div class="card">
+    <div class="cardhead"><h2>Your files <span class="hint" id="filesCount"></span></h2></div>
+    <div class="toolbar">
+      <div class="chips">
+        <button class="chipbtn on" data-f="all">All</button>
+        <button class="chipbtn" data-f="pub">🌍 Public</button>
+        <button class="chipbtn priv" data-f="priv">🔒 Private</button>
+        <button class="chipbtn enc" data-f="enc">🔐 Encrypted</button>
+      </div>
+      <div class="grow"></div>
+      <input type="search" id="search" placeholder="Search by name…">
+      <select id="sortSel" title="Sort files">
+        <option value="new">Newest first</option>
+        <option value="old">Oldest first</option>
+        <option value="name">Name A–Z</option>
+        <option value="size">Largest first</option>
+      </select>
+    </div>
+    <div id="files"><div class="empty">loading…</div></div>
+  </div>
+
+  <div class="card">
+    <div class="cardhead"><h2>Background workers <span class="hint">these run automatically</span></h2></div>
+    <div id="workers"></div>
+  </div>
+
+  <details id="adv">
+    <summary>Advanced — raw status, nodes, sets &amp; connection settings</summary>
+    <div class="keyring">
+      <input type="text" id="apiBase" placeholder="API URL" value="https://api.vikashbuilds.in">
+      <input type="password" id="apiKey" placeholder="API key (for Delete / Run buttons)" autocomplete="off">
+      <button onclick="saveSettings()">Save</button>
+    </div>
+    <div id="sets"></div>
+    <pre id="raw">…</pre>
+  </details>
+</main>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <script>
+"use strict";
 const LS_BASE = "gd_api_base", LS_KEY = "gd_api_key";
 const FIXED_BASE = "https://api.vikashbuilds.in";
 const httpsize = u => String(u || "").trim().replace(/^http:/i, "https:").replace(/\/+$/, "");
 let base = httpsize(localStorage.getItem(LS_BASE) || FIXED_BASE);
 let lastTunnels = JSON.parse(localStorage.getItem("gd_tunnels") || "[]").map(httpsize);
+let lastData = null, lastTick = Date.now();
 const WF_INFO = {
-  "upload-service": ["API server", "Handles uploads and feeds this dashboard."],
-  "verify":         ["Daily self-check", "Tests all storage tiers, once a day."],
-  "telegram":       ["Telegram bot", "Upload and manage files from Telegram."],
-  "carousel":       ["Storage pool nodes", "Keep big files alive and moving."],
-  "prune":          ["Cleanup & expiry", "Deletes expired files daily."],
-  "compress":       ["Compression farm", "Shrinks images and videos."],
-  "cache-backup":   ["Backup cache", "Extra mirror for hot files."],
-  "supervisor":     ["Node watchguard", "Restarts any dead pool node."],
+  "upload-service":["🖥️","API server","Handles uploads and feeds this dashboard."],
+  "verify":        ["🧪","Daily self-check","Tests all storage tiers, once a day."],
+  "telegram":      ["🤖","Telegram bot","Upload and manage files from Telegram."],
+  "carousel":      ["🚚","Storage pool nodes","Keep big files alive and moving."],
+  "prune":         ["🧹","Cleanup & expiry","Deletes expired files daily."],
+  "compress":      ["🗜️","Compression farm","Shrinks images and videos."],
+  "cache-backup":  ["💾","Backup cache","Extra mirror for hot files."],
+  "supervisor":    ["🛰️","Node watchguard","Restarts any dead pool node."],
 };
-let lastData = null;
+const STATUS_LABEL = {ready:"Ready", buffered:"Buffering", compressing:"Compressing", compressed:"Compressed",
+                      processing:"Processing", deleted:"Deleted", queued:"Queued"};
+const STORE_LABEL = {git:"small", release:"medium", archive:"archive", pool:"big file"};
 
-// ---------- E2E encryption (WebCrypto, all client-side) ----------
-// Master key from password (PBKDF2) → per-file key (HKDF) → AES-256-GCM.
-// Ciphertext is stored on GitHub; without the password it's unreadable.
+// ============================== E2E encryption (all client-side) ==============================
 let encMaster = null;            // raw 32-byte master key — lives only in this tab
-const ECHUNK = 1024 * 1024;      // 1 MiB plaintext per cipher chunk
+const ECHUNK = 1024 * 1024;
 const ENCMAGIC = new Uint8Array([0x47,0x44,0x45,0x4e,0x43,0x31]); // "GDENC1"
 
 function genFid(){ return Array.from(crypto.getRandomValues(new Uint8Array(6)), b => b.toString(16).padStart(2,"0")).join(""); }
@@ -182,8 +354,7 @@ async function fileKey(fileId){
   return crypto.subtle.deriveKey({name:"HKDF", hash:"SHA-256", salt:new Uint8Array(16), info},
       base, {name:"AES-GCM", length:256}, false, ["encrypt","decrypt"]);
 }
-
-async function encryptSlice(slice, fileId, startIdx, first){
+async function encryptSlice(slice, fileId, startIdx, first, onStep){
   const key = await fileKey(fileId);
   const parts = [];
   if(first){
@@ -193,15 +364,16 @@ async function encryptSlice(slice, fileId, startIdx, first){
     parts.push(h);
   }
   let idx = startIdx;
+  const total = Math.ceil(slice.size / ECHUNK) || 1, done = startIdx;
   for(let off = 0; off < slice.size; off += ECHUNK){
     const s = slice.slice(off, Math.min(off + ECHUNK, slice.size));
     const plain = new Uint8Array(await s.arrayBuffer());
     const ct = new Uint8Array(await crypto.subtle.encrypt({name:"AES-GCM", iv: encIv(idx)}, key, plain));
     parts.push(ct); idx++;
+    if(onStep) onStep(Math.min(1, (idx - startIdx) / total), done + idx - startIdx);
   }
   return { blob: new Blob(parts, {type:"application/octet-stream"}), nextIdx: idx };
 }
-
 async function decryptStream(res, fileId){
   const key = await fileKey(fileId);
   const reader = res.body.getReader();
@@ -227,7 +399,7 @@ async function decryptStream(res, fileId){
   return new Blob(out);
 }
 
-// ---------- access gate ----------
+// ============================== access gate ==============================
 function unlock(){
   const key = document.getElementById("gateKey").value.trim();
   const pass = document.getElementById("gatePass").value;
@@ -254,10 +426,15 @@ function lockE2E(){
 }
 ["gateKey","gatePass"].forEach(id => document.getElementById(id).addEventListener("keydown", e => { if(e.key === "Enter") unlock(); }));
 
-function toast(html, ms){ const t = document.getElementById("toast");
-  t.innerHTML = html; t.style.display = "block"; clearTimeout(t._h); t._h = setTimeout(()=>t.style.display="none", ms||6000); }
-function copyText(t){ navigator.clipboard.writeText(t).then(()=>toast("Link copied to clipboard ✔", 2500)); }
-
+// ============================== base utils ==============================
+let toastTimer = null;
+function toast(html, ms){
+  const t = document.getElementById("toast");
+  t.innerHTML = html; t.style.display = "block";
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.style.display = "none", ms || 6000);
+}
+function copyText(t){ navigator.clipboard.writeText(t).then(() => toast("Link copied to clipboard ✔", 2500)); }
 async function tryFetch(url, opts){
   const res = await fetch(url, opts);
   if(!res.ok) throw new Error("HTTP " + res.status);
@@ -274,7 +451,53 @@ async function fetchDash(u){
   if(!res.ok) throw new Error("HTTP " + res.status);
   return res.json();
 }
+function fmtBytes(n){
+  if(n == null) return "–";
+  if(n >= 1e12) return (n/1e12).toFixed(2)+" TB";
+  if(n >= 1e9) return (n/1e9).toFixed(2)+" GB";
+  if(n >= 1e6) return (n/1e6).toFixed(1)+" MB";
+  if(n >= 1e3) return (n/1e3).toFixed(0)+" KB";
+  return n+" B";
+}
+function fmtSpeed(bps){ return bps >= 1e6 ? (bps/1e6).toFixed(1)+" MB/s" : bps >= 1e3 ? (bps/1e3).toFixed(0)+" KB/s" : bps+" B/s"; }
+function fmtEta(sec){
+  if(!isFinite(sec) || sec < 0) return "";
+  if(sec < 60) return Math.round(sec)+"s left";
+  if(sec < 3600) return Math.floor(sec/60)+"m " + Math.round(sec%60) + "s left";
+  return Math.floor(sec/3600)+"h " + Math.floor((sec%3600)/60) + "m left";
+}
+function fmtExpiry(iso){
+  if(!iso) return "";
+  const ms = new Date(iso).getTime() - Date.now();
+  if(ms <= 0) return "now";
+  const d = Math.ceil(ms/86400000);
+  if(d > 1) return d+"d";
+  const h = Math.ceil(ms/3600000);
+  if(h > 1) return h+"h";
+  return Math.max(1, Math.ceil(ms/60000))+"m";
+}
+function ago(iso){
+  if(!iso) return "–";
+  const s = (Date.now() - new Date(iso).getTime())/1000;
+  if(s < 90) return "just now";
+  if(s < 5400) return Math.round(s/60)+" min ago";
+  return Math.round(s/3600)+" h ago";
+}
+function stale(iso){ return !iso || Date.now() - new Date(iso).getTime() > 10*60*1000; }
+function iconFor(f){
+  const n = f.name.toLowerCase();
+  if(f.enc) return "🔐";
+  if(/\.(png|jpe?g|gif|webp|svg|bmp|avif|heic)$/.test(n)) return "🖼️";
+  if(/\.(mp4|mkv|mov|avi|webm|m4v|wmv|flv)$/.test(n)) return "🎬";
+  if(/\.(mp3|wav|flac|m4a|aac|ogg)$/.test(n)) return "🎵";
+  if(/\.(zip|tar|gz|bz2|xz|7z|rar|tgz)$/.test(n)) return "📦";
+  if(/\.(pdf)$/.test(n)) return "📄";
+  if(/\.(txt|md|log|json|csv|yaml|yml|toml|xml|py|js|ts|html|css)$/.test(n)) return "📝";
+  return "📁";
+}
+function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
 
+// ============================== refresh & render ==============================
 async function refresh(){
   const candidates = [base, FIXED_BASE, ...lastTunnels.filter(u => u !== base && u !== FIXED_BASE)].map(httpsize);
   const seen = new Set(); let ok = false;
@@ -284,7 +507,7 @@ async function refresh(){
       const d = await fetchDash(u);
       lastTunnels = [u, ...lastTunnels.filter(x => x !== u)].slice(0,5);
       localStorage.setItem("gd_tunnels", JSON.stringify(lastTunnels));
-      base = u; render(d); ok = true; break;
+      base = u; lastTick = Date.now(); render(d); ok = true; break;
     } catch(e){}
   }
   if(!ok){
@@ -293,7 +516,7 @@ async function refresh(){
     document.getElementById("updated").textContent = "can't reach the server";
     const b = document.getElementById("banner");
     b.className = "banner bad"; b.style.display = "block";
-    b.innerHTML = "Can't reach the GitDrive server.<small>It restarts every ~30 minutes. Try again in a minute — or check that the API URL below is correct.</small>";
+    b.innerHTML = "Can't reach the GitDrive server.<small>It restarts every ~6 hours for about a minute. Try again in a moment — or check that the API URL below is correct.</small>";
   }
 }
 function setLive(){
@@ -302,10 +525,6 @@ function setLive(){
   document.getElementById("updated").textContent = "updated just now";
   document.getElementById("banner").style.display = "none";
 }
-function fmtBytes(n){ if(n == null) return "–"; if(n >= 1e9) return (n/1e9).toFixed(2)+" GB"; if(n >= 1e6) return (n/1e6).toFixed(1)+" MB"; if(n >= 1e3) return (n/1e3).toFixed(0)+" KB"; return n+" B"; }
-function ago(iso){ if(!iso) return "–"; const s = (Date.now() - new Date(iso).getTime())/1000;
-  if(s < 90) return "just now"; if(s < 5400) return Math.round(s/60)+" min ago"; return Math.round(s/3600)+" h ago"; }
-function stale(iso){ return !iso || Date.now() - new Date(iso).getTime() > 10*60*1000; }
 
 function render(d){
   lastData = d; setLive();
@@ -317,18 +536,17 @@ function render(d){
   document.getElementById("sNodes").textContent = active;
   document.getElementById("sNodeSub").textContent = active + " of " + d.nodes.length + " pool nodes healthy";
   document.getElementById("sJobs").textContent = d.jobs.length;
-  document.getElementById("tunnel") && (document.getElementById("tunnel").textContent = d.tunnel_url);
 
   const problems = [];
   for(const w of d.workflows){
     const last = w.runs[0];
-    if(last && last.conclusion && last.conclusion !== "success") problems.push(WF_INFO[w.workflow] ? WF_INFO[w.workflow][0] : w.workflow);
+    if(last && last.conclusion && last.conclusion !== "success") problems.push(WF_INFO[w.workflow] ? WF_INFO[w.workflow][1] : w.workflow);
   }
   const b = document.getElementById("banner");
   if(problems.length){
     b.className = "banner warn"; b.style.display = "block";
-    b.innerHTML = "Mostly healthy, but one worker needs attention: " + problems.join(", ") +
-      ".<small>Click “Run now” on it below, or check its logs in GitHub Actions.</small>";
+    b.innerHTML = "Mostly healthy, but needs attention: " + problems.join(", ") +
+      ".<small>Click “Run now” below, or check its logs in GitHub Actions.</small>";
   } else {
     b.className = "banner ok"; b.style.display = "block";
     b.innerHTML = "All systems running ✔<small>Files, pool nodes, and all background workers are healthy.</small>";
@@ -337,69 +555,96 @@ function render(d){
   renderWorkers(d);
   renderFiles(d.files);
   document.getElementById("raw").textContent = JSON.stringify(d, null, 2);
-
   document.getElementById("sets").innerHTML = d.sets.length ? d.sets.map(x =>
-    `<div class="row" style="font-size:13px"><span class="muted">${x.set_id}</span>
-     <span>${fmtBytes(x.size_bytes)}</span><span class="muted">holder: ${x.holder||"idle"}</span>
-     <span class="chip ${stale(x.last_anchor_at) ? "warn" : "ok"}">anchored ${ago(x.last_anchor_at)}</span></div>`
-  ).join("") : '<div class="muted">no sets yet</div>';
+    `<div class="frow" style="padding:8px;font-size:13px">
+       <div class="ficon">🗂️</div>
+       <div class="fmain"><div class="fname" style="font-size:13px">${x.set_id}</div>
+         <div class="fmeta">${fmtBytes(x.size_bytes)} · holder: ${x.holder||"idle"}</div></div>
+       <span class="chip ${stale(x.last_anchor_at) ? "warn" : "ok"}">anchored ${ago(x.last_anchor_at)}</span>
+     </div>`
+  ).join("") : '<div class="empty">no sets yet</div>';
 }
 
 function renderWorkers(d){
   const key = localStorage.getItem(LS_KEY) || "";
   document.getElementById("workers").innerHTML = d.workflow_options.map(name => {
-    const [fname, fdesc] = WF_INFO[name] || [name, ""];
+    const [icon, fname, fdesc] = WF_INFO[name] || ["⚙️", name, ""];
     const rec = d.workflows.find(w => w.workflow === name);
     const last = rec && rec.runs[0];
     let chip, label;
     if(!last){ chip = "chip"; label = "never run"; }
-    else if(last.status === "in_progress"){ chip = "chip ok"; label = "running now"; }
+    else if(last.status === "in_progress"){ chip = "chip ok pulse"; label = "running now"; }
     else if(last.conclusion === "success"){ chip = "chip ok"; label = "ok"; }
     else if(last.conclusion){ chip = "chip bad"; label = "issue"; }
-    else { chip = "chip warn"; label = "starting"; }
+    else { chip = "chip warn pulse"; label = "starting"; }
     return `<div class="worker">
+      <div class="wicon">${icon}</div>
       <div><div class="wname">${fname}</div><div class="wdesc">${fdesc}</div></div>
       <span class="${chip}">${label}</span>
       <span class="wlast">${last ? "last run " + ago(last.created_at) : ""}</span>
-      <button class="small" data-wf="${name}" ${key ? "" : "disabled"} onclick="dispatch('${name}')" title="${key ? "" : "Save the API key in Advanced settings to enable"}" >Run now</button>
+      <button class="small" data-wf="${name}" ${key ? "" : "disabled"} onclick="dispatch('${name}')"
+        title="${key ? "" : "Save the API key in Advanced settings to enable"}">Run now</button>
     </div>`;
   }).join("");
 }
 
+let fFilter = "all", fSort = "new";
 function renderFiles(files){
   const q = (document.getElementById("search").value || "").toLowerCase();
-  const list = files.filter(f => f.name.toLowerCase().includes(q));
+  let list = files.filter(f => f.name.toLowerCase().includes(q));
+  if(fFilter === "pub") list = list.filter(f => !f.private && !f.enc);
+  if(fFilter === "priv") list = list.filter(f => f.private && !f.enc);
+  if(fFilter === "enc") list = list.filter(f => f.enc);
+  if(fSort === "new") list = [...list].sort((a,b) => (b.created_at||"").localeCompare(a.created_at||""));
+  if(fSort === "old") list = [...list].sort((a,b) => (a.created_at||"").localeCompare(b.created_at||""));
+  if(fSort === "name") list = [...list].sort((a,b) => a.name.localeCompare(b.name));
+  if(fSort === "size") list = [...list].sort((a,b) => (b.size||0) - (a.size||0));
+
   const box = document.getElementById("files");
-  if(!list.length){ box.innerHTML = '<div class="empty">No files yet — drop one in the upload box above.</div>'; return; }
+  if(!list.length){
+    box.innerHTML = '<div class="empty"><span class="eico">🗄️</span>' +
+      (q || fFilter !== "all" ? "Nothing matches your filter." : "No files yet — drop one in the upload box above.") +
+      "</div>";
+    return;
+  }
   box.innerHTML = list.map(f => {
     const dlReady = f.status === "ready" || (f.store === "pool" && f.status === "buffered");
     const priv = !!f.private, enc = !!f.enc;
-    const sname = {git:"small", release:"medium", archive:"archive", pool:"big file"}[f.store] || f.store;
-    const metaBits = [fmtBytes(f.size), sname];
-    if(priv) metaBits.push("private");
-    if(enc) metaBits.push("encrypted");
-    metaBits.push("added " + ago(f.created_at));
-    return `<div class="row">
-      <div style="min-width:0; flex:1"><div class="fname">${priv ? "🔒 " : ""}${enc ? "🔐 " : ""}${f.name}</div>
-        <div class="fmeta">${metaBits.join(" · ")}</div></div>
-      <span class="chip ${dlReady ? "ok" : "warn"}">${f.status}</span>
+    const st = STATUS_LABEL[f.status] || f.status;
+    const chipCls = f.status === "ready" || f.status === "compressed" ? "ok"
+                  : f.status === "buffered" || f.status === "queued" || f.status === "processing" ? "warn pulse"
+                  : f.status === "deleted" ? "bad" : "warn";
+    const tags = [];
+    if(priv) tags.push('<span class="tag2 priv">private</span>');
+    if(enc) tags.push('<span class="tag2 enc">encrypted</span>');
+    tags.push(`<span class="tag2 store">${STORE_LABEL[f.store] || f.store}</span>`);
+    if(f.expires_at) tags.push(`<span class="tag2 exp">expires ${fmtExpiry(f.expires_at)}</span>`);
+    return `<div class="frow">
+      <div class="ficon">${iconFor(f)}</div>
+      <div class="fmain">
+        <div class="fname">${f.name}</div>
+        <div class="fmeta"><span class="meta">${fmtBytes(f.size)}</span>${tags.join("")}</div>
+      </div>
+      <span class="chip ${chipCls}" title="${dlReady ? "ready to download" : f.status}">${st}</span>
       <div class="acts">
-        <button class="small" ${dlReady ? "" : "disabled"} onclick="downloadFile('${f.id}')" title="${enc ? "Decrypts in your browser with the master password" : "Downloads via the API"}">Download</button>
+        <button class="small" ${dlReady ? "" : "disabled"} onclick="downloadFile('${f.id}')"
+          title="${enc ? "Decrypts in your browser with the master password" : "Downloads via the API"}">Download</button>
         <button class="small" onclick="copyLink('${f.id}')">Copy link</button>
         <button class="small danger" onclick="delFile('${f.id}')">Delete</button>
       </div>
     </div>`;
   }).join("");
+  document.getElementById("filesCount").textContent = "showing " + list.length + (files.length > list.length ? " of " + files.length + " newest" : "");
 }
-
 function fileById(id){ return (lastData.files || []).find(x => x.id === id); }
 
+// ============================== downloads ==============================
 async function downloadFile(id){
   const f = fileById(id);
   if(!f) return;
   if(f.enc && !encMaster){ toast("This file is encrypted — unlock with your master password to download it.", 6000); return; }
-  if(f.enc){ return downloadEncrypted(f); }
-  const BIG = 1024 * 1024 * 1024; // ≥1 GB files are streamed to disk, never buffered in RAM
+  if(f.enc) return downloadEncrypted(f);
+  const BIG = 1024 * 1024 * 1024;
   if(f.size >= BIG && "showSaveFilePicker" in window){
     try {
       const res = await fetch(base + "/v1/download/" + id, {headers: headers()});
@@ -433,7 +678,6 @@ async function downloadFile(id){
     toast("Downloaded ✔ " + f.name, 5000);
   } catch(e){ toast("Download failed: " + e.message, 6000); }
 }
-
 async function downloadEncrypted(f){
   try {
     const res = await fetch(base + "/v1/download/" + f.id, {headers: headers()});
@@ -447,14 +691,12 @@ async function downloadEncrypted(f){
     toast("Downloaded & decrypted ✔ " + f.name, 5000);
   } catch(e){ toast("Download failed: " + e.message, 6000); }
 }
-
 function copyLink(id){
   const f = fileById(id);
   if(!f) return;
   const url = (f.url && f.url.startsWith("http") && !f.enc) ? f.url : base + "/v1/download/" + id;
   navigator.clipboard.writeText(url).then(() => toast((f.enc ? "Encrypted download link copied — needs your master password to open." : "Link copied to clipboard ✔"), 2500));
 }
-
 async function delFile(id){
   if(!localStorage.getItem(LS_KEY)){ toast("Save your API key in Advanced settings to delete files.", 5000); return; }
   if(!confirm("Delete this file permanently?")) return;
@@ -464,10 +706,9 @@ async function delFile(id){
     toast("File deleted ✔"); refresh();
   } catch(e){ toast("Delete failed: " + e.message); }
 }
-
 async function dispatch(name){
   if(!localStorage.getItem(LS_KEY)){ toast("Save your API key in Advanced settings to run workers.", 5000); return; }
-  if(!confirm("Start “" + (WF_INFO[name] ? WF_INFO[name][0] : name) + "” now?")) return;
+  if(!confirm("Start “" + (WF_INFO[name] ? WF_INFO[name][1] : name) + "” now?")) return;
   try {
     const res = await fetch(base + "/v1/dashboard/dispatch?workflow=" + encodeURIComponent(name), {method:"POST", headers: headers()});
     if(!res.ok) throw new Error("HTTP " + res.status + " " + (await res.text()).slice(0,120));
@@ -476,99 +717,236 @@ async function dispatch(name){
   } catch(e){ toast("Failed to start: " + e.message, 6000); }
 }
 
-async function uploadFile(file){
-  if(file.size > 90 * 1024 * 1024) return uploadBig(file);
-  const msg = document.getElementById("upMsg");
-  const enc = !!encMaster;
-  const fid = enc ? genFid() : null;
-  msg.textContent = (enc ? "Encrypting & uploading " : "Uploading ") + file.name + " (" + fmtBytes(file.size) + ")…";
-  let body = file;
-  if(enc){
-    const e = await encryptSlice(file, fid, 0, true);
-    body = new File([e.blob], file.name + ".gd", {type:"application/octet-stream"});
-  }
-  const fd = new FormData();
-  fd.append("file", body);
-  fd.append("private", uploadPrivate);
-  if(enc){ fd.append("enc", "true"); fd.append("fid", fid); }
-  try {
-    const res = await fetch(base + "/v1/upload", {method:"POST", headers: headers(), body: fd});
-    const data = await res.json();
-    if(!res.ok) throw new Error(data.detail || ("HTTP " + res.status));
-    msg.textContent = "";
-    if(enc){
-      toast("🔐 Uploaded & encrypted ✔ " + data.name + " — only your master password can open it.", 8000);
-    } else if(data.private){
-      toast("Uploaded privately ✔ " + data.name + " — download it from the list with your API key.", 8000);
-    } else {
-      toast("Uploaded ✔ <a href='" + (data.url || "#") + "'>" + data.name + "</a> — " + fmtBytes(data.size || file.size), 8000);
-    }
-    refresh();
-  } catch(e){
-    msg.textContent = "Upload failed: " + e.message;
-  }
+// ============================== upload queue ==============================
+const CHUNK = 64 * 1024 * 1024;      // 64 MB per part — under the tunnel's 100 MB cap
+const SMALL_MAX = 90 * 1024 * 1024;
+const MAX_RETRIES = 3;
+let queue = [], pumping = false, seq = 0;
+
+function xhrPost(url, body, headersMap, item, onProgress){
+  return new Promise((resolve, reject) => {
+    const x = new XMLHttpRequest();
+    item._xhr = x;
+    x.open("POST", url);
+    for(const [k,v] of Object.entries(headersMap)) x.setRequestHeader(k, v);
+    x.upload.onprogress = e => { if(e.lengthComputable) onProgress && onProgress(e.loaded); };
+    x.onload = () => {
+      if(x.status >= 200 && x.status < 300) resolve(x.responseText);
+      else {
+        let detail = "";
+        try { detail = JSON.parse(x.responseText).detail || ""; } catch(e2){}
+        const err = new Error(detail || ("HTTP " + x.status));
+        err.status = x.status; err.detail = detail; reject(err);
+      }
+    };
+    x.onerror = () => reject(new Error("network error"));
+    x.onabort = () => { const e = new Error("cancelled"); e.cancelled = true; reject(e); };
+    x.send(body);
+  });
 }
 
-async function uploadBig(file){
-  const msg = document.getElementById("upMsg");
-  const enc = !!encMaster;
-  let fid = enc ? genFid() : null;
-  const CH = 64 * 1024 * 1024; // 64 MB chunks — under the tunnel's 100 MB cap
-  const q = new URLSearchParams({name: file.name, total_size: file.size, mime: file.type || "", private: uploadPrivate});
-  if(enc){ q.set("enc", "true"); q.set("fid", fid); }
-  try {
-    const d = await tryFetch(base + "/v1/upload/start?" + q, {method:"POST", headers: headers()});
-    fid = d.id;
-  } catch(e){ msg.textContent = "Upload failed to start: " + e.message; return; }
-  let off = 0, cOff = 0, cidx = 0;
-  try {
-    while(off < file.size){
-      const slice = file.slice(off, Math.min(off + CH, file.size));
-      let chunk = slice;
-      if(enc){
-        msg.textContent = "Encrypting " + file.name + " — " + fmtBytes(off) + " of " + fmtBytes(file.size) + "…";
-        const e = await encryptSlice(slice, fid, cidx, off === 0);
-        chunk = e.blob; cidx = e.nextIdx;
-      }
-      const res = await fetch(base + "/v1/upload/chunk/" + fid + "?offset=" + cOff, {method:"POST", headers: headers(), body: chunk});
-      if(!res.ok){
-        let detail = "";
-        try { detail = (await res.json()).detail || ""; } catch(e2){}
-        if(res.status === 409 && detail.indexOf("offset mismatch") === 0){
-          cOff = parseInt(detail.split(" ").pop(), 10) || cOff;
-          continue;
-        }
-        throw new Error("chunk at " + fmtBytes(cOff) + ": " + (detail || res.status));
-      }
-      off += slice.size;
-      cOff += chunk.size;
-      const pct = Math.round(off / file.size * 100);
-      msg.textContent = (enc ? "Encrypting & uploading " : "Uploading ") + file.name + " — " + fmtBytes(off) + " of " + fmtBytes(file.size) + " (" + pct + "%)";
-    }
-    await tryFetch(base + "/v1/upload/complete/" + fid, {method:"POST", headers: headers()});
-    msg.textContent = "Uploaded " + fmtBytes(file.size) + " — GitDrive is finalizing (a few minutes)…";
-    for(let i = 0; i < 120; i++){
-      await new Promise(r => setTimeout(r, 5000));
-      try {
-        const f = await tryFetch(base + "/v1/file/" + fid, {headers: headers()});
-        if(f.status === "ready"){
-          msg.textContent = "";
-          if(f.enc){
-            toast("🔐 Uploaded & encrypted ✔ " + f.name + " — only your master password can open it.", 9000);
-          } else if(f.private){
-            toast("Uploaded privately ✔ " + f.name + " — download it from the list with your API key.", 9000);
-          } else {
-            toast("Uploaded ✔ <a href='" + f.url + "'>" + f.name + "</a> — " + fmtBytes(f.size), 9000);
-          }
-          refresh(); return;
-        }
-      } catch(e){}
-    }
-    msg.textContent = "Upload finished — still finalizing in the background; it will appear in Your files shortly.";
-    refresh();
-  } catch(e){
-    msg.textContent = "Upload failed: " + e.message + " (you can retry — safe to drop the file again)";
+function queueUpload(file){
+  const item = {
+    idx: ++seq, file, state: "queued", pct: 0, bytes: 0, total: file.size,
+    speed: 0, eta: "", err: "", done: false, cancelled: false, _t: performance.now(), _last: 0,
+  };
+  queue.push(item);
+  renderQueue();
+  if(!pumping) pump();
+  return item;
+}
+
+function cancelUpload(item){
+  item.cancelled = true;
+  if(item._xhr) item._xhr.abort();
+}
+
+function renderQueue(){
+  const box = document.getElementById("queue");
+  if(!queue.length){ box.innerHTML = ""; return; }
+  box.innerHTML = queue.map(it => {
+    const st = it.state;
+    const statCls = st === "done" ? "ok" : st === "error" || st === "cancelled" ? "bad" : st === "finalizing" ? "dim" : "warn";
+    const statTxt = st === "queued" ? "Waiting…"
+      : st === "encrypting" ? "Encrypting… " + Math.round(it.pct) + "%"
+      : st === "uploading" ? Math.round(it.pct) + "%"
+      : st === "finalizing" ? "Finalizing on server…"
+      : st === "done" ? "Done ✔"
+      : st === "cancelled" ? "Cancelled"
+      : st === "error" ? "Failed — " + (it.err || "")
+      : st;
+    const sub = st === "uploading"
+      ? fmtBytes(it.bytes) + " / " + fmtBytes(it.total) + " · " + fmtSpeed(it.speed) + (it.eta ? " · " + it.eta : "")
+      : st === "queued" ? fmtBytes(it.total)
+      : st === "finalizing" ? "appears in your files when ready"
+      : st === "encrypting" ? fmtBytes(it.total) + " · AES-256 on this device"
+      : st === "error" ? "you can safely drop the file again to retry"
+      : "";
+    const fillCls = st === "done" ? "pfill ok" : st === "error" || st === "cancelled" ? "pfill bad" : "pfill";
+    return `<div class="uq" data-idx="${it.idx}">
+      <div class="uqtop"><span class="uqname">${escapeHtml(it.file.name)}</span><span class="uqstat ${statCls}">${statTxt}</span></div>
+      <div class="pbar"><div class="${fillCls}" style="width:${Math.min(100, it.pct)}%"></div></div>
+      <div class="uqsub">${sub}
+        ${(st === "queued" || st === "encrypting" || st === "uploading" || st === "finalizing") && !it.cancelled
+          ? `<button class="btn" onclick="cancelUploadByIdx(${it.idx})">Cancel</button>` : ""}
+      </div>
+    </div>`;
+  }).join("");
+}
+function cancelUploadByIdx(idx){
+  const it = queue.find(x => x.idx === idx);
+  if(it) cancelUpload(it);
+}
+function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+
+function updateItem(it){
+  if(it.done || it.cancelled) return;
+  const now = performance.now();
+  if(now - it._t > 800 && it.bytes > it._last){
+    it.speed = (it.bytes - it._last) / ((now - it._t) / 1000);
+    it._t = now; it._last = it.bytes;
+    it.eta = it.speed > 0 ? fmtEta((it.total - it.bytes) / it.speed) : "";
   }
+  it.pct = it.total ? Math.min(100, it.bytes / it.total * 100) : 0;
+  renderQueue();
+}
+
+async function pump(){
+  if(pumping) return;
+  pumping = true;
+  while(queue.length){
+    const it = queue.shift();
+    renderQueue();
+    if(it.cancelled) continue;
+    try { await uploadOne(it); }
+    catch(e){ if(!it.cancelled){ it.state = "error"; it.err = e.message; it.pct = 100; renderQueue(); } }
+    if(it.done){
+      setTimeout(() => {
+        queue = queue.filter(x => x.idx !== it.idx);
+        renderQueue();
+      }, 4000);
+    }
+  }
+  pumping = false;
+}
+
+async function uploadOne(it){
+  const enc = !!encMaster;
+  const fid = enc ? genFid() : null;
+
+  if(it.file.size <= SMALL_MAX){
+    // ---- single request ----
+    it.state = enc ? "encrypting" : "uploading";
+    renderQueue();
+    let body = it.file;
+    if(enc){
+      const e = await encryptSlice(it.file, fid, 0, true, (p) => {
+        it.pct = p * 90; renderQueue();
+      });
+      body = new File([e.blob], it.file.name + ".gd", {type:"application/octet-stream"});
+    }
+    if(it.cancelled) return;
+    const fd = new FormData();
+    fd.append("file", body);
+    fd.append("private", uploadPrivate);
+    if(enc){ fd.append("enc", "true"); fd.append("fid", fid); }
+    it.state = "uploading"; it.bytes = 0; it.pct = 0; renderQueue();
+    const url = base + "/v1/upload";
+    let lastErr = null;
+    for(let attempt = 0; attempt <= MAX_RETRIES; attempt++){
+      if(it.cancelled) return;
+      try {
+        await xhrPost(url, fd, headers(), it, loaded => {
+          it.bytes = loaded;
+          it.pct = Math.max(it.pct, 95 * loaded / Math.max(1, body.size));
+          updateItem(it);
+        });
+        break;
+      } catch(e){
+        if(e.cancelled) return;
+        lastErr = e;
+        if(attempt < MAX_RETRIES){ it.err = "retrying (" + (attempt+1) + "/" + MAX_RETRIES + ")…"; it.pct = 100; renderQueue(); await sleep(1500 * (attempt + 1)); }
+      }
+    }
+    if(lastErr) throw lastErr;
+    it.state = "done"; it.pct = 100; it.done = true; renderQueue();
+    toast("Uploaded ✔ " + it.file.name, 5000);
+    refresh();
+    return;
+  }
+
+  // ---- chunked ----
+  const qs = new URLSearchParams({name: it.file.name, total_size: it.file.size, mime: it.file.type || "", private: uploadPrivate});
+  if(enc){ qs.set("enc", "true"); qs.set("fid", fid); }
+  let fidFinal = fid;
+  try {
+    const d = await tryFetch(base + "/v1/upload/start?" + qs, {method:"POST", headers: headers()});
+    fidFinal = d.id;
+  } catch(e){ throw new Error("upload start failed: " + e.message); }
+  if(it.cancelled) return;
+
+  let off = 0, cOff = 0, cidx = 0;
+  while(off < it.file.size){
+    if(it.cancelled) return;
+    const slice = it.file.slice(off, Math.min(off + CHUNK, it.file.size));
+    let chunk = slice;
+    if(enc){
+      it.state = "encrypting"; renderQueue();
+      const e = await encryptSlice(slice, fidFinal, cidx, off === 0, (p) => {
+        it.bytes = off; it.pct = (off + p * slice.size) / it.total * 100; renderQueue();
+      });
+      chunk = e.blob; cidx = e.nextIdx;
+      it.state = "uploading"; renderQueue();
+    }
+    const url = base + "/v1/upload/chunk/" + fidFinal + "?offset=" + cOff;
+    let lastErr = null, lastStatus = 0;
+    for(let attempt = 0; attempt <= MAX_RETRIES; attempt++){
+      if(it.cancelled) return;
+      try {
+        await xhrPost(url, chunk, headers(), it, loaded => {
+          it.bytes = cOff + loaded;
+          it.pct = Math.max(it.pct, (cOff + loaded) / it.total * 100);
+          updateItem(it);
+        });
+        break;
+      } catch(e){
+        if(e.cancelled) return;
+        lastErr = e; lastStatus = e.status || 0;
+        if(lastStatus === 409 && e.detail && e.detail.indexOf("offset mismatch") === 0){
+          const exp = parseInt(e.detail.split(" ").pop(), 10) || cOff;
+          if(exp > cOff){ off = exp; cOff = exp; }
+          break;
+        }
+        if(attempt < MAX_RETRIES){
+          it.err = "retrying (" + (attempt+1) + "/" + MAX_RETRIES + ")…";
+          renderQueue();
+          await sleep(1500 * (attempt + 1));
+        }
+      }
+    }
+    if(lastErr && !(lastStatus === 409)) throw lastErr;
+    off += slice.size;
+    cOff += chunk.size;
+  }
+  if(it.cancelled) return;
+
+  // ---- finalize ----
+  it.state = "finalizing"; it.bytes = it.total; it.pct = 100; renderQueue();
+  try { await tryFetch(base + "/v1/upload/complete/" + fidFinal, {method:"POST", headers: headers()}); }
+  catch(e){ throw new Error("finalize failed: " + e.message); }
+  it.state = "done"; it.done = true; renderQueue();
+  toast("Uploaded ✔ " + it.file.name + " — finalizing on the server.", 5000);
+  refresh();
+  // background: poll until ready so the queue panel clears and files list updates
+  (async () => {
+    for(let i = 0; i < 120; i++){
+      await sleep(5000);
+      try {
+        const f = await tryFetch(base + "/v1/file/" + fidFinal, {headers: headers()});
+        if(f.status === "ready"){ refresh(); return; }
+      } catch(e){ return; }
+    }
+  })();
 }
 
 function saveSettings(){
@@ -579,32 +957,43 @@ function saveSettings(){
   refresh(); toast("Settings saved ✔", 2500);
 }
 
-// drag & drop + file picker
+// ============================== drag & drop + controls ==============================
 const drop = document.getElementById("drop"), fi = document.getElementById("fileInput");
 let uploadPrivate = localStorage.getItem("gd_private") === "1";
 function setVis(p){
   uploadPrivate = p;
   localStorage.setItem("gd_private", p ? "1" : "0");
-  const pub = document.getElementById("visPub"), prv = document.getElementById("visPriv");
-  pub.className = "segbtn" + (p ? "" : " on");
-  prv.className = "segbtn priv" + (p ? " on" : "");
+  document.getElementById("visPub").className = "segbtn" + (p ? "" : " on");
+  document.getElementById("visPriv").className = "segbtn priv" + (p ? " on" : "");
 }
 document.getElementById("visPub").onclick = () => setVis(false);
 document.getElementById("visPriv").onclick = () => setVis(true);
 setVis(uploadPrivate);
 drop.onclick = () => fi.click();
-fi.onchange = () => { if(fi.files[0]) uploadFile(fi.files[0]); fi.value = ""; };
+drop.addEventListener("keydown", e => { if(e.key === "Enter" || e.key === " ") { e.preventDefault(); fi.click(); } });
+fi.onchange = () => { for(const f of fi.files) queueUpload(f); fi.value = ""; };
 ["dragenter","dragover"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("over"); }));
 ["dragleave","drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("over"); }));
-drop.addEventListener("drop", e => { const f = e.dataTransfer.files[0]; if(f) uploadFile(f); });
+drop.addEventListener("drop", e => { e.preventDefault(); for(const f of e.dataTransfer.files) queueUpload(f); });
 
 document.getElementById("apiBase").value = base;
 if(localStorage.getItem(LS_KEY)) document.getElementById("gateKey").placeholder = "API key saved — leave empty to use it";
 document.getElementById("search").addEventListener("input", () => lastData && renderFiles(lastData.files));
+document.getElementById("sortSel").addEventListener("change", e => { fSort = e.target.value; lastData && renderFiles(lastData.files); });
+document.querySelectorAll(".chipbtn").forEach(btn => btn.addEventListener("click", () => {
+  document.querySelectorAll(".chipbtn").forEach(b => b.classList.remove("on"));
+  btn.classList.add("on");
+  fFilter = btn.dataset.f;
+  lastData && renderFiles(lastData.files);
+}));
 
 showGate(""); // locked until you unlock with your API key (and optional master password)
 
-setInterval(() => { refresh(); if(lastData) document.getElementById("updated").textContent = "updated " + ago(new Date().toISOString()); }, 30000);
+setInterval(() => { if(!document.hidden) refresh(); }, 30000);
+setInterval(() => {
+  if(lastData) document.getElementById("updated").textContent = "updated " + ago(new Date(lastTick).toISOString());
+}, 10000);
+document.addEventListener("visibilitychange", () => { if(!document.hidden) refresh(); });
 refresh();
 </script>
 </body>

@@ -914,13 +914,13 @@ def dashboard(x_api_key: str = Header("")):
     cur.execute("SELECT count(*) FROM files WHERE status = 'deleted'")
     deleted = cur.fetchone()[0]
     cur.execute(
-        "SELECT id, name, size, store, status, url, created_at, private, enc FROM files "
+        "SELECT id, name, size, store, status, url, created_at, private, enc, expires_at FROM files "
         "WHERE status <> 'deleted' ORDER BY created_at DESC LIMIT 20"
     )
     files = [
         {"id": r[0], "name": r[1], "size": r[2], "store": r[3], "status": r[4],
          "url": r[5], "created_at": r[6].isoformat() if r[6] else None,
-         "private": r[7], "enc": r[8]}
+         "private": r[7], "enc": r[8], "expires_at": r[9].isoformat() if r[9] else None}
         for r in cur.fetchall()
     ]
     cur.execute("SELECT id, type, status, attempts, target_id, updated_at FROM jobs ORDER BY id DESC LIMIT 15")
