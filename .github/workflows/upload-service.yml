@@ -100,7 +100,8 @@ jobs:
           RELAY_TOKEN: ${{ secrets.RELAY_TOKEN }}
           UPLOAD_LIMIT_MB: '25'
           POOL_MAX_GB: '12'
-          RATE_LIMIT_PER_HOUR: '60'
+          RATE_LIMIT_WRITE_PER_HOUR: '300'
+          RATE_LIMIT_READ_PER_HOUR: '2000'
         run: |
           python app/server.py &
           sleep 21300 && kill %1 || true

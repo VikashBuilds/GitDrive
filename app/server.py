@@ -1,4 +1,4 @@
-import hashlib
+﻿import hashlib
 import json
 import os
 import re
@@ -39,7 +39,8 @@ POOL_MAX = POOL_MAX_GB * 1024 * 1024 * 1024    # max file that fits a 14 GB pool
 RELAY_TOKEN = os.environ.get("RELAY_TOKEN", "")
 DASHBOARD_REPO = os.environ.get("DASHBOARD_REPO", "VikashBuilds/GitDrive")
 BUFFER_DIR = "/tmp/gitdrive-buffer"
-RATE_LIMIT = int(os.environ.get("RATE_LIMIT_PER_HOUR", "60"))
+RATE_LIMIT_WRITE = int(os.environ.get("RATE_LIMIT_WRITE_PER_HOUR", "300"))
+RATE_LIMIT_READ = int(os.environ.get("RATE_LIMIT_READ_PER_HOUR", "2000"))
 SET_COUNT = int(os.environ.get("SET_COUNT", "20"))
 STORE_DIRS = {repo: f"/tmp/gitdrive-store-{i}" for i, repo in enumerate(STORAGE_REPOS + PRIVATE_STORAGE_REPOS)}
 
@@ -69,6 +70,7 @@ async def unhandled(request: Request, exc: Exception):
 
 
 _uploads = defaultdict(deque)
+_reads = defaultdict(deque)
 _gh = httpx.Client(timeout=300)
 _gh_async = httpx.AsyncClient(timeout=600, follow_redirects=True)
 
@@ -77,17 +79,18 @@ def db():
     return psycopg2.connect(DB_URL)
 
 
-def check_key(key: str, need: str = "admin"):
+def check_key(key: str, need: str = "admin", mutating: bool = False):
     if not _API_KEY_PLAIN or key not in _API_KEY_PLAIN:
         raise HTTPException(401, "invalid api key")
     scope = _API_KEY_SCOPES.get(key, "admin")
     if need == "admin" and scope != "admin":
         raise HTTPException(403, "key is upload-scoped; admin action rejected")
+    bucket, limit = (_uploads, RATE_LIMIT_WRITE) if mutating else (_reads, RATE_LIMIT_READ)
     now = time.time()
-    q = _uploads[key]
+    q = bucket[key]
     while q and now - q[0] > 3600:
         q.popleft()
-    if len(q) >= RATE_LIMIT:
+    if len(q) >= limit:
         raise HTTPException(429, "rate limited")
     q.append(now)
 
@@ -198,7 +201,7 @@ def enqueue_compress(file_id: str, size: int, mime: str, enc: bool = False, priv
     if size < 200_000:
         return
     if enc:
-        return  # ciphertext is opaque — compression would shred it
+        return  # ciphertext is opaque â€” compression would shred it
     if private:
         return  # private files must never be re-hosted in public storage
     if mime.startswith("image/") or mime.startswith("video/"):
@@ -245,7 +248,7 @@ def _repo_has_commits(repo: str) -> bool:
 
 
 def _seed_empty_repo(repo: str):
-    """GitHub refuses to create Releases on empty repos — seed an initial commit."""
+    """GitHub refuses to create Releases on empty repos â€” seed an initial commit."""
     dest = os.path.join(STORE_DIRS[repo], "README.md")
     with open(dest, "w") as f:
         f.write(f"# GitDrive storage repo\nInitialized {datetime.now(timezone.utc).isoformat()}.\n")
@@ -302,7 +305,7 @@ def buffer_delete(file_id: str, x_relay_token: str = Header("")):
 async def archive_start(name: str, total_parts: int, mime: str = "application/octet-stream",
                         private: bool = False, x_api_key: str = Header("")):
     """Begin a chunked archive upload. Returns the file id + release tag."""
-    check_key(x_api_key, need="upload")
+    check_key(x_api_key, need="upload", mutating=True)
     name = re.sub(r"[^A-Za-z0-9._-]", "_", name)
     if total_parts < 1 or total_parts > 1000:
         raise HTTPException(400, "total_parts must be 1-1000")
@@ -328,8 +331,8 @@ async def archive_start(name: str, total_parts: int, mime: str = "application/oc
 @app.post("/v1/archive/{file_id}/part")
 async def archive_part(file_id: str, index: int, file: UploadFile = File(...),
                        x_api_key: str = Header("")):
-    """Upload one ≤2 GB part. index starts at 0."""
-    check_key(x_api_key, need="upload")
+    """Upload one â‰¤2 GB part. index starts at 0."""
+    check_key(x_api_key, need="upload", mutating=True)
     data = await file.read()
     if len(data) > RELEASE_MAX:
         raise HTTPException(413, "part too large (max 2 GB)")
@@ -366,7 +369,7 @@ async def archive_part(file_id: str, index: int, file: UploadFile = File(...),
 @app.post("/v1/archive/{file_id}/complete")
 async def archive_complete(file_id: str, x_api_key: str = Header("")):
     """Finalize the archive; the file gets its permanent download URL."""
-    check_key(x_api_key, need="upload")
+    check_key(x_api_key, need="upload", mutating=True)
     conn = db()
     cur = conn.cursor()
     cur.execute("SELECT name, parts_json FROM files WHERE id = %s AND store = 'archive' AND status = 'archiving'", (file_id,))
@@ -472,7 +475,7 @@ def _download_private(store: str, name: str, repo: str, tag: str, path: str,
 async def download(file_id: str, x_api_key: str = Header(""), key: str = ""):
     """Stream any file. Archives are concatenated from their release parts.
 
-    Downloads require a valid API key for every file (public included) —
+    Downloads require a valid API key for every file (public included) â€”
     the dashboard sends it via header; the ?key= query fallback exists for
     native browser downloads (<a download> can't set headers).
     Private files are additionally proxied through authenticated GitHub API
@@ -501,17 +504,17 @@ async def download(file_id: str, x_api_key: str = Header(""), key: str = ""):
     cur.close()
     conn.close()
     if store == "pool" and status == "deleted":
-        raise HTTPException(410, "file deleted — copy pruned from pool")
+        raise HTTPException(410, "file deleted â€” copy pruned from pool")
     if private or enc:
-        # private → authenticated proxy; enc → route through the API so the
+        # private â†’ authenticated proxy; enc â†’ route through the API so the
         # browser can decrypt the ciphertext client-side (no CORS redirect).
         return _download_private(store, name, repo, tag, path, parts_json, size)
     if store == "pool" and (not url or not url.startswith("http")):
-        # Buffered big file: durable parts already exist in the release —
+        # Buffered big file: durable parts already exist in the release â€”
         # stream them now instead of waiting for a pool node to claim it.
         parts = json.loads(parts_json or "[]")
         if not parts:
-            raise HTTPException(404, "no parts yet — still buffering")
+            raise HTTPException(404, "no parts yet â€” still buffering")
         total = sum(p["size"] for p in parts)
 
         async def gen_pool():
@@ -695,7 +698,7 @@ def finalize_upload(name: str, mime: str, data_path: str, expires: datetime | No
 async def upload(file: UploadFile = File(...), private: bool = Form(False), enc: bool = Form(False),
                  fid: str | None = Form(None), x_api_key: str = Header(""),
                  expire_days: int | None = Form(None)):
-    check_key(x_api_key, need="upload")
+    check_key(x_api_key, need="upload", mutating=True)
     if fid is not None and not re.fullmatch(r"[0-9a-f]{12}", fid):
         raise HTTPException(400, "fid must be 12 hex chars")
     if fid is not None and os.path.exists(os.path.join(BUFFER_DIR, f"{fid}.up")):
@@ -718,7 +721,7 @@ async def upload(file: UploadFile = File(...), private: bool = Form(False), enc:
             fh.write(chunk)
     try:
         if total > POOL_MAX:
-            raise HTTPException(413, f"file too large (max {POOL_MAX_GB} GB — pool limit)")
+            raise HTTPException(413, f"file too large (max {POOL_MAX_GB} GB â€” pool limit)")
         expires = datetime.now(timezone.utc) + timedelta(days=expire_days) if expire_days else None
         result = finalize_upload(name, mime, spool, expires=expires, fid=fid, private=private, enc=enc)
     finally:
@@ -731,11 +734,11 @@ async def upload(file: UploadFile = File(...), private: bool = Form(False), enc:
 async def upload_start(name: str, total_size: int, mime: str = "", private: bool = False,
                        enc: bool = False, fid: str | None = None, x_api_key: str = Header("")):
     """Open a chunked upload session (bypasses the 100 MB edge cap)."""
-    check_key(x_api_key, need="upload")
+    check_key(x_api_key, need="upload", mutating=True)
     if fid is not None and not re.fullmatch(r"[0-9a-f]{12}", fid):
         raise HTTPException(400, "fid must be 12 hex chars")
     if total_size > POOL_MAX:
-        raise HTTPException(413, f"file too large (max {POOL_MAX_GB} GB — pool limit)")
+        raise HTTPException(413, f"file too large (max {POOL_MAX_GB} GB â€” pool limit)")
     safe = re.sub(r"[^A-Za-z0-9._-]", "_", name or "file")
     ext = os.path.splitext(safe)[1].lower()
     if ext in BLOCKED_EXT or (mime or "").lower() in BLOCKED_MIME:
@@ -754,8 +757,8 @@ async def upload_start(name: str, total_size: int, mime: str = "", private: bool
 
 @app.post("/v1/upload/chunk/{fid}")
 async def upload_chunk(fid: str, offset: int, request: Request, x_api_key: str = Header("")):
-    """Append a ≤90 MB chunk at a fixed offset; 409 with current offset if stale."""
-    check_key(x_api_key, need="upload")
+    """Append a â‰¤90 MB chunk at a fixed offset; 409 with current offset if stale."""
+    check_key(x_api_key, need="upload", mutating=True)
     path = os.path.join(BUFFER_DIR, f"{fid}.up")
     if not os.path.exists(path):
         raise HTTPException(404, "upload session not found")
@@ -778,7 +781,7 @@ async def upload_complete(fid: str, background: BackgroundTasks, x_api_key: str 
     The heavy work (hash + release-asset parts) exceeds the edge timeout, so
     the client should poll GET /v1/file/{fid} for status='ready'.
     """
-    check_key(x_api_key, need="upload")
+    check_key(x_api_key, need="upload", mutating=True)
     path = os.path.join(BUFFER_DIR, f"{fid}.up")
     meta_path = os.path.join(BUFFER_DIR, f"{fid}.meta")
     if not os.path.exists(path) or not os.path.exists(meta_path):
@@ -841,7 +844,7 @@ def list_files(limit: int = 50, offset: int = 0, mime: str | None = None,
 
 @app.delete("/v1/file/{file_id}")
 def delete_file(file_id: str, x_api_key: str = Header("")):
-    check_key(x_api_key)
+    check_key(x_api_key, mutating=True)
     conn = db()
     cur = conn.cursor()
     cur.execute("SELECT store, path, name, release_tag, repo, parts_json FROM files WHERE id = %s", (file_id,))
@@ -987,7 +990,7 @@ def dashboard(x_api_key: str = Header("")):
 @app.post("/v1/dashboard/dispatch")
 def dispatch_workflow(workflow: str, node_id: str = "", run_minutes: str = "",
                       x_api_key: str = Header("")):
-    check_key(x_api_key)
+    check_key(x_api_key, mutating=True)
     wf_file = WORKFLOW_FILES.get(workflow)
     if not wf_file:
         raise HTTPException(400, f"unknown workflow; choose from {sorted(WORKFLOW_FILES)}")
