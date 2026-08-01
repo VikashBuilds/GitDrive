@@ -57,5 +57,6 @@ jobs:
         run: pip install httpx psycopg2-binary
       - name: Prune old snapshots
         env:
+          DB_URL: ${{ secrets.GITDRIVE_DB_URL }}
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: python scripts/cache_backup.py --prune --keep-days 5 --today ${{ needs.prepare.outputs.date }}

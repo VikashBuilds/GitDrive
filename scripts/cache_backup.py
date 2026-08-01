@@ -23,6 +23,22 @@ def db():
     return psycopg2.connect(DB_URL)
 
 
+def api_base() -> str:
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("SELECT v FROM meta WHERE k = 'tunnel_url'")
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return (row[0] or "").strip() if row else ""
+
+
+def resolve_url(url: str, base: str) -> str:
+    if url.startswith("/"):
+        return base + url
+    return url
+
+
 def build_chunks():
     conn = db()
     cur = conn.cursor()
@@ -31,6 +47,7 @@ def build_chunks():
     cur.close()
     conn.close()
 
+    base = api_base()
     os.makedirs("backup", exist_ok=True)
     chunks = []
     current = None
@@ -49,7 +66,7 @@ def build_chunks():
             out_path = os.path.join(os.getcwd(), chunk["name"])
             with tarfile.open(out_path, "w:gz") as tar:
                 for fid, name, url in chunk["files"]:
-                    r = client.get(url)
+                    r = client.get(resolve_url(url, base))
                     if r.status_code != 200:
                         continue
                     data = tarfile.TarInfo(name=f"{fid}_{name}")
