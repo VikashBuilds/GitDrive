@@ -157,7 +157,7 @@ def finalize_received(set_id: str):
     )
     cur.execute(
         "UPDATE files SET url = %s || '/v1/set/' || set_id || '/' || path "
-        "WHERE set_id = %s AND store = 'pool' AND path IS NOT NULL",
+        "WHERE set_id = %s AND store = 'pool' AND path IS NOT NULL AND private = FALSE",
         (TUNNEL_URL, set_id),
     )
     cur.close()
@@ -273,6 +273,8 @@ def checkin_set(set_id: str, manifest: list) -> list:
     cur = conn.cursor()
     cur.execute("SELECT name FROM files WHERE set_id = %s AND store = 'pool' AND status = 'deleted'", (set_id,))
     deleted_names = {r[0] for r in cur.fetchall()}
+    cur.execute("SELECT name FROM files WHERE set_id = %s AND store = 'pool' AND private = TRUE", (set_id,))
+    private_names = {r[0] for r in cur.fetchall()}
     cur.close()
     conn.close()
     for f in src.iterdir():
@@ -281,6 +283,10 @@ def checkin_set(set_id: str, manifest: list) -> list:
         if f.name in deleted_names:
             f.unlink()
             print(f"[relay] pruned deleted pool file {f.name}")
+            continue
+        if f.name in private_names:
+            f.unlink()
+            print(f"[relay] pruned private pool file {f.name} (never anchored publicly)")
             continue
         size = f.stat().st_size
         old = next((m for m in manifest if m["name"] == f.name), None)
@@ -378,7 +384,7 @@ def drain_buffer_jobs():
         try:
             conn = db()
             cur = conn.cursor()
-            cur.execute("SELECT name, set_id, size, parts_json FROM files WHERE id = %s", (fid,))
+            cur.execute("SELECT name, set_id, size, parts_json, private FROM files WHERE id = %s", (fid,))
             frow = cur.fetchone()
             cur.close()
             conn.close()
@@ -390,7 +396,21 @@ def drain_buffer_jobs():
                 cur.close()
                 conn.close()
                 continue
-            name, set_id, size, parts_json = frow
+            name, set_id, size, parts_json, private = frow
+            if private:
+                # Private pool files live only as durable parts in the private
+                # repo. The node must NOT hold or serve them (public tunnel).
+                conn = db()
+                conn.autocommit = True
+                cur = conn.cursor()
+                cur.execute("UPDATE files SET url = '', status = 'ready' WHERE id = %s", (fid,))
+                cur.execute("UPDATE sets SET size_bytes = size_bytes + %s WHERE set_id = %s", (size, set_id))
+                cur.execute("DELETE FROM jobs WHERE id = %s", (job_id,))
+                conn.commit()
+                cur.close()
+                conn.close()
+                print(f"[relay] private {name} stays in private repo parts (no node copy)")
+                continue
             tmp = Path(f"/tmp/drain-{fid}")
             got = 0
             if parts_json:

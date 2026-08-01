@@ -95,6 +95,7 @@ jobs:
           DB_URL: ${{ secrets.GITDRIVE_DB_URL }}
           API_KEYS: ${{ secrets.GITDRIVE_API_KEYS }}
           STORAGE_REPOS: ${{ secrets.STORAGE_REPOS }}
+          PRIVATE_STORAGE_REPOS: ${{ secrets.PRIVATE_STORAGE_REPOS }}
           GH_TOKEN: ${{ secrets.GH_PAT }}
           RELAY_TOKEN: ${{ secrets.RELAY_TOKEN }}
           UPLOAD_LIMIT_MB: '25'

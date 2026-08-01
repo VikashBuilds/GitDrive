@@ -18,6 +18,7 @@ import psycopg2
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 DB_URL = os.environ.get("DB_URL", "")
 RUN_MINUTES = int(os.environ.get("RUN_MINUTES", "50"))
+ALLOWED = {int(x.strip()) for x in os.environ.get("BOT_ALLOW_CHAT_ID", "").split(",") if x.strip().lstrip("-").isdigit()}
 API = "https://api.telegram.org"
 PAGE = 8
 client = httpx.Client(timeout=httpx.Timeout(600.0, connect=30.0))
@@ -109,6 +110,22 @@ def api_key() -> str:
     return os.environ.get("GITDRIVE_API_KEYS", "").split(",")[0].strip()
 
 
+def privacy_for(chat_id: int) -> bool:
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("SELECT v FROM meta WHERE k = %s", (f"privacy_{chat_id}",))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return (row and row[0] and row[0].strip().lower() == "private") or False
+
+
+def toggle_privacy(chat_id: int) -> bool:
+    new = not privacy_for(chat_id)
+    set_meta(f"privacy_{chat_id}", "private" if new else "public")
+    return new
+
+
 def api_call(method: str, path: str, **kwargs):
     base = current_api_url()
     if not base:
@@ -152,20 +169,28 @@ def fmt_age(iso):
     return f"{int(s//86400)} d ago"
 
 
-def menu_markup():
+def menu_markup(chat_id: int | None = None):
+    label = "🔒 Visibility: " + ("PRIVATE" if privacy_for(chat_id) else "public") if chat_id else "🔒 Visibility"
     return kb(
         (btn("📊 Status", "stats"), btn("📁 My files", "files:0")),
         (btn("📤 Upload a file", "upload"), btn("❓ Help", "help")),
+        (btn(label, "privacy")),
     )
 
 
+def menu_text(chat_id: int) -> str:
+    vis = "🔒 PRIVATE" if privacy_for(chat_id) else "🌍 public"
+    return f"What would you like to do?\n\nUploads are currently <b>{vis}</b> — /private to switch."
 def welcome(chat_id: int):
     send(chat_id,
          "👋 Welcome to your GitDrive!\n\n"
          "I store your files on GitHub and give you a link to download them from anywhere.\n\n"
          "➡️ Just send me a document and I'll upload it.\n"
-         "➡️ Big files (100 MB–12 GB)? I'll route them into the relay pool automatically.",  # noqa: E501
-         markup=menu_markup())
+         "➡️ Big files (100 MB–12 GB)? I'll route them into the relay pool automatically.\n\n"
+         "🔒 Uploads are " + ("<b>PRIVATE</b> — link only you can open via the dashboard." if privacy_for(chat_id)
+                              else "<b>public</b> — anyone with the link can download.") +
+         " Use /private to switch.",
+         markup=menu_markup(chat_id))
 
 
 def stats_text() -> str:
@@ -196,7 +221,8 @@ def files_message(page: int):
     lines = [f"📁 Your files (page {page+1} of {pages})", ""]
     rows = []
     for i, f in enumerate(items, 1):
-        lines.append(f"{i}. {esc(f.get('name'))} — {fmt_bytes(f.get('size'))} — {fmt_age(f.get('created_at'))}")
+        lock = " 🔒" if f.get("private") else ""
+        lines.append(f"{i}. {esc(f.get('name'))}{lock} — {fmt_bytes(f.get('size'))} — {fmt_age(f.get('created_at'))}")
         rows.append((btn(str(i), f"file:{f.get('id')}"),))
     lines.append("")
     lines.append(f"Tap a number for details. {total} files total.")
@@ -213,9 +239,11 @@ def files_message(page: int):
 def file_text(f) -> str:
     ready = f.get("status") == "ready"
     status = "✅ ready" if ready else ("⏳ " + (f.get("status") or "pending"))
+    vis = "🔒 private" if f.get("private") else "🌍 public"
     return (
         f"📄 {esc(f.get('name'))}\n\n"
         f"Size: {fmt_bytes(f.get('size'))}\n"
+        f"Visibility: {vis}\n"
         f"Status: {status}\n"
         f"Uploaded: {fmt_age(f.get('created_at'))}\n"
         f"Downloads: {f.get('downloads', 0)}\n"
@@ -225,8 +253,10 @@ def file_text(f) -> str:
 
 def file_markup(f):
     rows = []
-    if f.get("url"):
+    if f.get("url") and not f.get("private"):
         rows.append(({"text": "🔗 Open link", "url": f["url"]},))
+    elif f.get("private"):
+        rows.append((btn("ℹ️ Private file", "prvinfo"),))
     rows.append((btn("🗑 Delete", f"del:{f.get('id')}"), btn("🏠", "menu")))
     return kb(*rows)
 
@@ -237,7 +267,21 @@ def delete_confirm_markup(fid: str):
 
 def handle_callback(chat_id: int, message_id: int, data: str):
     if data == "menu":
-        edit(chat_id, message_id, "What would you like to do?", markup=menu_markup())
+        edit(chat_id, message_id, menu_text(chat_id), markup=menu_markup(chat_id))
+        return
+    if data == "privacy":
+        priv = toggle_privacy(chat_id)
+        vis = "🔒 PRIVATE — uploads need your API key to download (dashboard only)." if priv else \
+              "🌍 public — anyone with the link can download."
+        edit(chat_id, message_id, f"Visibility switched to {vis}\n\nNext upload will be "
+                                  f"<b>{'PRIVATE' if priv else 'public'}</b>.", markup=menu_markup(chat_id))
+        return
+    if data == "prvinfo":
+        edit(chat_id, message_id,
+             "🔒 This file is <b>private</b>.\n\n"
+             "It's stored in a private GitHub repo and can only be downloaded with your API key, "
+             "from the dashboard (gitdrive.vikashbuilds.in). There is no public link — that's the point. 🙂",
+             markup=kb((btn("🏠", "menu"),)))
         return
     if data == "help":
         edit(chat_id, message_id, help_text(), markup=menu_markup())
@@ -327,6 +371,12 @@ def handle_command(chat_id: int, text: str):
             return
         send(chat_id, "Are you sure? This can't be undone.", markup=delete_confirm_markup(parts[1]))
         return
+    if cmd == "/private":
+        priv = toggle_privacy(chat_id)
+        vis = "🔒 PRIVATE — next uploads go to your private repos; downloads need your API key from the dashboard." if priv else \
+              "🌍 public — next uploads get public links."
+        send(chat_id, f"Uploads are now <b>{vis}</b>", markup=menu_markup(chat_id))
+        return
     if cmd == "/set":
         if len(parts) < 2:
             send(chat_id, "Usage: /set <api-base-url>")
@@ -355,6 +405,7 @@ def help_text() -> str:
         "  /files — list your files\n"
         "  /file &lt;id&gt; — details of one file\n"
         "  /delete &lt;id&gt; — delete a file\n"
+        "  /private — toggle public/private uploads\n"
         "  /set &lt;url&gt; — set API address (advanced)\n"
         "  /key &lt;key&gt; — set API key (advanced)"
     )
@@ -395,17 +446,20 @@ def handle_document(chat_id: int, msg: dict):
                 f"{base}/v1/upload",
                 headers={"X-API-Key": api_key()},
                 files={"file": (name, fh, "application/octet-stream")},
+                data={"private": "true" if privacy_for(chat_id) else "false"},
                 timeout=httpx.Timeout(1800.0, connect=30.0),
             )
         r.raise_for_status()
         res = r.json()
+        vis = "🔒 <b>private</b> (dashboard download only)" if res.get("private") else "🌍 <b>public</b>"
         return (
             f"✅ Uploaded <b>{esc(res.get('name'))}</b>\n\n"
             f"Size: {fmt_bytes(res.get('size') or size)}\n"
+            f"Visibility: {vis}\n"
             f"Status: {res.get('status')}\n"
             f"Deduped: {'yes ✔' if res.get('deduped') else 'no'}\n"
             f"ID: {res.get('id')}\n\n"
-            f"🔗 {res.get('url') or '(link ready soon — it takes a minute)'}"
+            f"{'🔗 ' + (res.get('url') or '(link ready soon — it takes a minute)') if not res.get('private') else ''}"
         )
     except Exception as e:
         return f"⚠️ Upload failed: {e}"
@@ -434,7 +488,11 @@ def main():
             cb = up.get("callback_query")
             if cb:
                 try:
-                    handle_callback(cb["message"]["chat"]["id"], cb["message"]["message_id"], cb.get("data", ""))
+                    cb_chat = cb["message"]["chat"]["id"]
+                    if ALLOWED and cb_chat not in ALLOWED:
+                        answer(cb.get("id"), "⛔ This bot is private.")
+                        continue
+                    handle_callback(cb_chat, cb["message"]["message_id"], cb.get("data", ""))
                 except Exception as e:
                     print(f"[bot] callback error: {e}")
                 answer(cb.get("id"), "")
@@ -442,6 +500,9 @@ def main():
             msg = up.get("message") or up.get("channel_post") or {}
             chat_id = (msg.get("chat") or {}).get("id")
             if not chat_id or msg.get("date", 0) < int(time.time()) - 120:
+                continue
+            if ALLOWED and chat_id not in ALLOWED:
+                print(f"[bot] ignoring chat {chat_id} (not on allowlist)")
                 continue
             text = msg.get("text") or ""
             if text.startswith("/"):

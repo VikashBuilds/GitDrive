@@ -35,6 +35,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           DB_URL: ${{ secrets.GITDRIVE_DB_URL }}
           GITDRIVE_API_KEYS: ${{ secrets.GITDRIVE_API_KEYS }}
+          BOT_ALLOW_CHAT_ID: ${{ secrets.BOT_ALLOW_CHAT_ID }}
           RUN_MINUTES: '50'
         run: |
           python scripts/telegram_bot.py &

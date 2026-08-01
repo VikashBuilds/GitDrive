@@ -1,0 +1,48 @@
+name: DB Backup
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 4 * * *'
+
+concurrency:
+  group: gitdrive-db-backup
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Dump database
+        env:
+          DB_URL: ${{ secrets.GITDRIVE_DB_URL }}
+        run: |
+          pg_dump "$DB_URL" --no-owner --no-privileges | gzip -9 > /tmp/gitdrive-db.sql.gz
+          ls -lh /tmp/gitdrive-db.sql.gz
+
+      - name: Upload to private repo (retain 14 days)
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
+          BACKUP_REPO: ${{ secrets.PRIVATE_STORAGE_REPOS }}
+        run: |
+          set -e
+          REPO=$(echo "$BACKUP_REPO" | cut -d',' -f1)
+          [ -n "$REPO" ] || REPO="VikashBuilds/private-p1"
+          TODAY=$(date +%Y%m%d)
+          TAG="db-$TODAY"
+          gh release create "$TAG" /tmp/gitdrive-db.sql.gz --repo "$REPO" --title "DB backup $TODAY" --notes "Nightly pg_dump of the GitDrive database." || true
+
+          echo "Deleting backups older than 14 days..."
+          CUTOFF=$(date -d '14 days ago' +%Y%m%d)
+          for line in $(gh release list --repo "$REPO" --limit 60 --json tagName --jq '.[].tagName'); do
+            day=$(echo "$line" | sed -n 's/^db-\([0-9]\{8\}\)$/\1/p')
+            if [ -n "$day" ] && [ "$day" -lt "$CUTOFF" ]; then
+              echo "deleting $line"
+              gh release delete "$line" --repo "$REPO" --yes --cleanup-tag
+            fi
+          done

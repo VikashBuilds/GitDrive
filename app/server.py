@@ -15,11 +15,21 @@ import psycopg2
 import uvicorn
 from fastapi import BackgroundTasks, FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 
 DB_URL = os.environ["DB_URL"]
 API_KEYS = [k.strip() for k in os.environ.get("API_KEYS", "").split(",") if k.strip()]
+_API_KEY_PLAIN = set()
+_API_KEY_SCOPES = {}
+for _k in API_KEYS:
+    if ":" in _k:
+        _key, _scope = _k.split(":", 1)
+        _API_KEY_PLAIN.add(_key)
+        _API_KEY_SCOPES[_key] = _scope
+    else:
+        _API_KEY_PLAIN.add(_k)
 STORAGE_REPOS = [r.strip() for r in os.environ.get("STORAGE_REPOS", os.environ.get("STORAGE_REPO", "")).split(",") if r.strip()]
+PRIVATE_STORAGE_REPOS = [r.strip() for r in os.environ.get("PRIVATE_STORAGE_REPOS", "VikashBuilds/private-p1,VikashBuilds/private-p2").split(",") if r.strip()]
 GH_TOKEN = os.environ["GH_TOKEN"]
 GIT_THRESHOLD = int(os.environ.get("UPLOAD_LIMIT_MB", "25")) * 1024 * 1024
 RELEASE_MAX = 2 * 1024 * 1024 * 1024          # GitHub release asset cap
@@ -31,7 +41,7 @@ DASHBOARD_REPO = os.environ.get("DASHBOARD_REPO", "VikashBuilds/GitDrive")
 BUFFER_DIR = "/tmp/gitdrive-buffer"
 RATE_LIMIT = int(os.environ.get("RATE_LIMIT_PER_HOUR", "60"))
 SET_COUNT = int(os.environ.get("SET_COUNT", "20"))
-STORE_DIRS = {repo: f"/tmp/gitdrive-store-{i}" for i, repo in enumerate(STORAGE_REPOS)}
+STORE_DIRS = {repo: f"/tmp/gitdrive-store-{i}" for i, repo in enumerate(STORAGE_REPOS + PRIVATE_STORAGE_REPOS)}
 
 GH = {
     "Authorization": f"Bearer {GH_TOKEN}",
@@ -67,9 +77,12 @@ def db():
     return psycopg2.connect(DB_URL)
 
 
-def check_key(key: str):
-    if API_KEYS and key not in API_KEYS:
+def check_key(key: str, need: str = "admin"):
+    if not _API_KEY_PLAIN or key not in _API_KEY_PLAIN:
         raise HTTPException(401, "invalid api key")
+    scope = _API_KEY_SCOPES.get(key, "admin")
+    if need == "admin" and scope != "admin":
+        raise HTTPException(403, "key is upload-scoped; admin action rejected")
     now = time.time()
     q = _uploads[key]
     while q and now - q[0] > 3600:
@@ -81,6 +94,12 @@ def check_key(key: str):
 
 def repo_for(set_id: str) -> str:
     return STORAGE_REPOS[int(set_id.split("-")[1]) % len(STORAGE_REPOS)]
+
+
+def private_repo_for(set_id: str) -> str:
+    if not PRIVATE_STORAGE_REPOS:
+        return repo_for(set_id)
+    return PRIVATE_STORAGE_REPOS[int(set_id.split("-")[1]) % len(PRIVATE_STORAGE_REPOS)]
 
 
 def git(args: list, repo: str):
@@ -263,24 +282,24 @@ def buffer_delete(file_id: str, x_relay_token: str = Header("")):
 
 @app.post("/v1/archive/start")
 async def archive_start(name: str, total_parts: int, mime: str = "application/octet-stream",
-                        x_api_key: str = Header("")):
+                        private: bool = False, x_api_key: str = Header("")):
     """Begin a chunked archive upload. Returns the file id + release tag."""
-    check_key(x_api_key)
+    check_key(x_api_key, need="upload")
     name = re.sub(r"[^A-Za-z0-9._-]", "_", name)
     if total_parts < 1 or total_parts > 1000:
         raise HTTPException(400, "total_parts must be 1-1000")
     fid = uuid.uuid4().hex[:12]
     now = datetime.now(timezone.utc)
     set_id = f"set-{int(fid[:2], 16) % SET_COUNT:02d}"
-    repo = repo_for(set_id)
+    repo = private_repo_for(set_id) if private else repo_for(set_id)
     tag = f"archive-{now.strftime('%Y%m%d%H')}-{fid}"
     ensure_release(tag, repo)
     conn = db()
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO files (id, sha, name, size, mime, store, path, release_tag, url, status, set_id, repo, parts_json) "
-        "VALUES (%s, %s, %s, 0, %s, 'archive', %s, %s, '', 'archiving', %s, %s, '[]')",
-        (fid, f"archive-{fid}", name, mime, f"parts/{fid}", tag, set_id, repo),
+        "INSERT INTO files (id, sha, name, size, mime, store, path, release_tag, url, status, set_id, repo, parts_json, private) "
+        "VALUES (%s, %s, %s, 0, %s, 'archive', %s, %s, '', 'archiving', %s, %s, '[]', %s)",
+        (fid, f"archive-{fid}", name, mime, f"parts/{fid}", tag, set_id, repo, private),
     )
     conn.commit()
     cur.close()
@@ -292,7 +311,7 @@ async def archive_start(name: str, total_parts: int, mime: str = "application/oc
 async def archive_part(file_id: str, index: int, file: UploadFile = File(...),
                        x_api_key: str = Header("")):
     """Upload one ≤2 GB part. index starts at 0."""
-    check_key(x_api_key)
+    check_key(x_api_key, need="upload")
     data = await file.read()
     if len(data) > RELEASE_MAX:
         raise HTTPException(413, "part too large (max 2 GB)")
@@ -329,7 +348,7 @@ async def archive_part(file_id: str, index: int, file: UploadFile = File(...),
 @app.post("/v1/archive/{file_id}/complete")
 async def archive_complete(file_id: str, x_api_key: str = Header("")):
     """Finalize the archive; the file gets its permanent download URL."""
-    check_key(x_api_key)
+    check_key(x_api_key, need="upload")
     conn = db()
     cur = conn.cursor()
     cur.execute("SELECT name, parts_json FROM files WHERE id = %s AND store = 'archive' AND status = 'archiving'", (file_id,))
@@ -354,18 +373,103 @@ async def archive_complete(file_id: str, x_api_key: str = Header("")):
     return {"id": file_id, "parts": len(parts), "size": size, "url": url}
 
 
+def _asset_id(repo: str, tag: str, url: str | None = None, name: str | None = None) -> int:
+    """Resolve a private release asset to its API asset id (auth required)."""
+    r = _gh.get(f"https://api.github.com/repos/{repo}/releases/tags/{tag}", headers=GH)
+    if r.status_code != 200:
+        raise HTTPException(404, "release not found")
+    for a in r.json().get("assets", []):
+        if url and a.get("browser_download_url") == url:
+            return a["id"]
+        if name and a["name"] == name:
+            return a["id"]
+    raise HTTPException(404, "asset not found")
+
+
+def _stream_private_asset(repo: str, asset_id: int, name: str, total: int):
+    async def gen():
+        async with _gh_async.stream(
+            "GET", f"https://api.github.com/repos/{repo}/releases/assets/{asset_id}",
+            headers={**GH, "Accept": "application/octet-stream"},
+        ) as r:
+            r.raise_for_status()
+            async for chunk in r.aiter_bytes(1024 * 256):
+                yield chunk
+
+    return StreamingResponse(
+        gen(),
+        media_type="application/octet-stream",
+        headers={
+            "Content-Length": str(total),
+            "Content-Disposition": f'attachment; filename="{name}"',
+        },
+    )
+
+
+def _download_private(store: str, name: str, repo: str, tag: str, path: str,
+                      parts_json: str | None, size: int):
+    """Serve a private file via authenticated GitHub API (never a public URL)."""
+    if store == "git":
+        r = _gh.get(
+            f"https://api.github.com/repos/{repo}/contents/{quote(path)}",
+            headers={**GH, "Accept": "application/vnd.github.raw"},
+        )
+        if r.status_code != 200:
+            raise HTTPException(404, "private file content not found")
+        return Response(
+            content=r.content,
+            media_type="application/octet-stream",
+            headers={"Content-Disposition": f'attachment; filename="{name}"'},
+        )
+    if store == "release":
+        aid = _asset_id(repo, tag, name=name)
+        return _stream_private_asset(repo, aid, name, size)
+    parts = json.loads(parts_json or "[]")
+    if not parts:
+        raise HTTPException(404, "no parts")
+    total = sum(p["size"] for p in parts)
+    ids = [_asset_id(repo, tag, url=p.get("url")) for p in parts]
+
+    async def gen():
+        for aid in ids:
+            async with _gh_async.stream(
+                "GET", f"https://api.github.com/repos/{repo}/releases/assets/{aid}",
+                headers={**GH, "Accept": "application/octet-stream"},
+            ) as r:
+                r.raise_for_status()
+                async for chunk in r.aiter_bytes(1024 * 256):
+                    yield chunk
+
+    return StreamingResponse(
+        gen(),
+        media_type="application/octet-stream",
+        headers={
+            "Content-Length": str(total),
+            "Content-Disposition": f'attachment; filename="{name}"',
+        },
+    )
+
+
 @app.get("/v1/download/{file_id}")
 async def download(file_id: str):
-    """Stream any file. Archives are concatenated from their release parts."""
+    """Stream any file. Archives are concatenated from their release parts.
+
+    Private files are proxied through authenticated GitHub API endpoints so
+    the underlying storage URL is never exposed.
+    """
     conn = db()
     cur = conn.cursor()
-    cur.execute("SELECT store, url, name, parts_json, status FROM files WHERE id = %s", (file_id,))
+    cur.execute(
+        "SELECT store, url, name, parts_json, status, repo, path, size, release_tag, private "
+        "FROM files WHERE id = %s",
+        (file_id,),
+    )
     row = cur.fetchone()
     cur.close()
     conn.close()
     if not row:
         raise HTTPException(404, "not found")
-    store, url, name, parts_json, status = row
+    store, url, name, parts_json, status, repo, path, size, tag, private = row
     conn = db()
     cur = conn.cursor()
     cur.execute("UPDATE files SET download_count = download_count + 1 WHERE id = %s", (file_id,))
@@ -374,6 +478,8 @@ async def download(file_id: str):
     conn.close()
     if store == "pool" and status == "deleted":
         raise HTTPException(410, "file deleted — copy pruned from pool")
+    if private:
+        return _download_private(store, name, repo, tag, path, parts_json, size)
     if store == "archive":
         parts = json.loads(parts_json or "[]")
         if not parts:
@@ -398,10 +504,13 @@ async def download(file_id: str):
     return RedirectResponse(url)
 
 
-def finalize_upload(name: str, mime: str, data_path: str, expires: datetime | None = None, fid: str | None = None):
+def finalize_upload(name: str, mime: str, data_path: str, expires: datetime | None = None,
+                    fid: str | None = None, private: bool = False):
     """Shared tail of upload: hash, dedupe, tier decision, record row.
 
     Works on a spool file so big uploads never sit fully in RAM.
+    Private files land in PRIVATE_STORAGE_REPOS and are served through
+    /v1/download (authenticated proxy) instead of public GitHub URLs.
     """
     size = os.path.getsize(data_path)
     sha = hashlib.sha256()
@@ -412,25 +521,29 @@ def finalize_upload(name: str, mime: str, data_path: str, expires: datetime | No
 
     conn = db()
     cur = conn.cursor()
-    cur.execute("SELECT id, url, size, mime, status, expires_at, download_count FROM files WHERE sha = %s", (digest,))
+    cur.execute(
+        "SELECT id, url, size, mime, status, expires_at, download_count FROM files "
+        "WHERE sha = %s AND private = %s",
+        (digest, private),
+    )
     row = cur.fetchone()
     if row:
         cur.close()
         conn.close()
         return {"id": row[0], "url": row[1], "size": row[2], "mime": row[3], "deduped": True,
-                "expires_at": row[5].isoformat() if row[5] else None}
+                "expires_at": row[5].isoformat() if row[5] else None, "private": private}
 
     fid = fid or uuid.uuid4().hex[:12]
     now = datetime.now(timezone.utc)
     rel = f"files/{now.strftime('%Y/%m')}/{digest[:2]}/{fid}-{name}"
     set_id = f"set-{int(digest[:2], 16) % SET_COUNT:02d}"
-    repo = repo_for(set_id)
+    repo = private_repo_for(set_id) if private else repo_for(set_id)
 
     parts_json = None
     if size <= GIT_THRESHOLD:
         with open(data_path, "rb") as fh:
             git_store_bytes(fh.read(), rel, repo)
-        url = f"https://raw.githubusercontent.com/{repo}/main/{rel}"
+        url = f"/v1/download/{fid}" if private else f"https://raw.githubusercontent.com/{repo}/main/{rel}"
         store = "git"
         tag = None
         status = "ready"
@@ -438,7 +551,7 @@ def finalize_upload(name: str, mime: str, data_path: str, expires: datetime | No
         with open(data_path, "rb") as fh:
             data = fh.read()
         tag = "assets-" + now.strftime("%Y%m%d%H")
-        url = release_upload(data, name, mime, tag, repo)
+        url = f"/v1/download/{fid}" if private else release_upload(data, name, mime, tag, repo)
         store = "release"
         status = "ready"
     else:
@@ -502,9 +615,9 @@ def finalize_upload(name: str, mime: str, data_path: str, expires: datetime | No
         status = "buffered"
 
     cur.execute(
-        "INSERT INTO files (id, sha, name, size, mime, store, path, release_tag, url, expires_at, set_id, repo, status, parts_json) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-        (fid, digest, name, size, mime, store, rel, tag, url, expires, set_id, repo, status, parts_json),
+        "INSERT INTO files (id, sha, name, size, mime, store, path, release_tag, url, expires_at, set_id, repo, status, parts_json, private) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+        (fid, digest, name, size, mime, store, rel, tag, url, expires, set_id, repo, status, parts_json, private),
     )
     conn.commit()
     cur.close()
@@ -523,13 +636,14 @@ def finalize_upload(name: str, mime: str, data_path: str, expires: datetime | No
     enqueue_compress(fid, size, mime)
     note = "queued for relay pool" if store == "pool" else None
     return {"id": fid, "name": name, "size": size, "mime": mime, "url": url,
-            "deduped": False, "status": status, "note": note,
+            "deduped": False, "status": status, "note": note, "private": private,
             "expires_at": expires.isoformat() if expires else None}
 
 
 @app.post("/v1/upload")
-async def upload(file: UploadFile = File(...), x_api_key: str = Header(""), expire_days: int | None = None):
-    check_key(x_api_key)
+async def upload(file: UploadFile = File(...), private: bool = False,
+                 x_api_key: str = Header(""), expire_days: int | None = None):
+    check_key(x_api_key, need="upload")
     name = re.sub(r"[^A-Za-z0-9._-]", "_", file.filename or "file")
     ext = os.path.splitext(name)[1].lower()
     mime = (file.content_type or "").lower()
@@ -550,7 +664,7 @@ async def upload(file: UploadFile = File(...), x_api_key: str = Header(""), expi
         if total > POOL_MAX:
             raise HTTPException(413, f"file too large (max {POOL_MAX_GB} GB — pool limit)")
         expires = datetime.now(timezone.utc) + timedelta(days=expire_days) if expire_days else None
-        result = finalize_upload(name, mime, spool, expires=expires)
+        result = finalize_upload(name, mime, spool, expires=expires, private=private)
     finally:
         if os.path.exists(spool):
             os.remove(spool)
@@ -558,9 +672,10 @@ async def upload(file: UploadFile = File(...), x_api_key: str = Header(""), expi
 
 
 @app.post("/v1/upload/start")
-async def upload_start(name: str, total_size: int, mime: str = "", x_api_key: str = Header("")):
+async def upload_start(name: str, total_size: int, mime: str = "", private: bool = False,
+                       x_api_key: str = Header("")):
     """Open a chunked upload session (bypasses the 100 MB edge cap)."""
-    check_key(x_api_key)
+    check_key(x_api_key, need="upload")
     if total_size > POOL_MAX:
         raise HTTPException(413, f"file too large (max {POOL_MAX_GB} GB — pool limit)")
     safe = re.sub(r"[^A-Za-z0-9._-]", "_", name or "file")
@@ -574,14 +689,14 @@ async def upload_start(name: str, total_size: int, mime: str = "", x_api_key: st
     with open(os.path.join(BUFFER_DIR, f"{fid}.up"), "wb"):
         pass
     with open(os.path.join(BUFFER_DIR, f"{fid}.meta"), "w") as fh:
-        json.dump({"name": safe, "mime": mime or "", "total_size": total_size, "created": time.time()}, fh)
+        json.dump({"name": safe, "mime": mime or "", "total_size": total_size, "private": private, "created": time.time()}, fh)
     return {"id": fid, "total_size": total_size}
 
 
 @app.post("/v1/upload/chunk/{fid}")
 async def upload_chunk(fid: str, offset: int, request: Request, x_api_key: str = Header("")):
     """Append a ≤90 MB chunk at a fixed offset; 409 with current offset if stale."""
-    check_key(x_api_key)
+    check_key(x_api_key, need="upload")
     path = os.path.join(BUFFER_DIR, f"{fid}.up")
     if not os.path.exists(path):
         raise HTTPException(404, "upload session not found")
@@ -604,7 +719,7 @@ async def upload_complete(fid: str, background: BackgroundTasks, x_api_key: str 
     The heavy work (hash + release-asset parts) exceeds the edge timeout, so
     the client should poll GET /v1/file/{fid} for status='ready'.
     """
-    check_key(x_api_key)
+    check_key(x_api_key, need="upload")
     path = os.path.join(BUFFER_DIR, f"{fid}.up")
     meta_path = os.path.join(BUFFER_DIR, f"{fid}.meta")
     if not os.path.exists(path) or not os.path.exists(meta_path):
@@ -621,7 +736,7 @@ async def upload_complete(fid: str, background: BackgroundTasks, x_api_key: str 
         meta = json.load(fh)
     if os.path.getsize(path) != meta["total_size"]:
         raise HTTPException(400, f"incomplete upload: {os.path.getsize(path)}/{meta['total_size']}")
-    background.add_task(finalize_upload, meta["name"], meta["mime"], path, None, fid)
+    background.add_task(finalize_upload, meta["name"], meta["mime"], path, None, fid, meta.get("private", False))
     return {"id": fid, "status": "processing", "note": "finalizing in background; poll /v1/file/{id}"}
 
 
@@ -629,7 +744,7 @@ async def upload_complete(fid: str, background: BackgroundTasks, x_api_key: str 
 def get_file(file_id: str):
     conn = db()
     cur = conn.cursor()
-    cur.execute("SELECT id, name, size, mime, url, status, expires_at, download_count, created_at FROM files WHERE id = %s", (file_id,))
+    cur.execute("SELECT id, name, size, mime, url, status, expires_at, download_count, created_at, private FROM files WHERE id = %s", (file_id,))
     row = cur.fetchone()
     cur.close()
     conn.close()
@@ -637,7 +752,7 @@ def get_file(file_id: str):
         raise HTTPException(404, "not found")
     return {"id": row[0], "name": row[1], "size": row[2], "mime": row[3], "url": row[4],
             "status": row[5], "expires_at": row[6].isoformat() if row[6] else None,
-            "downloads": row[7], "created_at": row[8].isoformat()}
+            "downloads": row[7], "created_at": row[8].isoformat(), "private": row[9]}
 
 
 @app.get("/v1/files")
@@ -645,15 +760,15 @@ def list_files(limit: int = 50, offset: int = 0, mime: str | None = None):
     conn = db()
     cur = conn.cursor()
     if mime:
-        cur.execute("SELECT id, name, size, mime, url, created_at FROM files WHERE mime LIKE %s ORDER BY created_at DESC LIMIT %s OFFSET %s",
+        cur.execute("SELECT id, name, size, mime, url, created_at, private FROM files WHERE mime LIKE %s ORDER BY created_at DESC LIMIT %s OFFSET %s",
                     (mime + "%", limit, offset))
         items = [{"id": r[0], "name": r[1], "size": r[2], "mime": r[3], "url": r[4],
-                  "created_at": r[5].isoformat()} for r in cur.fetchall()]
+                  "created_at": r[5].isoformat(), "private": r[6]} for r in cur.fetchall()]
         cur.execute("SELECT count(*) FROM files WHERE mime LIKE %s", (mime + "%",))
     else:
-        cur.execute("SELECT id, name, size, mime, url, created_at FROM files ORDER BY created_at DESC LIMIT %s OFFSET %s", (limit, offset))
+        cur.execute("SELECT id, name, size, mime, url, created_at, private FROM files ORDER BY created_at DESC LIMIT %s OFFSET %s", (limit, offset))
         items = [{"id": r[0], "name": r[1], "size": r[2], "mime": r[3], "url": r[4],
-                  "created_at": r[5].isoformat()} for r in cur.fetchall()]
+                  "created_at": r[5].isoformat(), "private": r[6]} for r in cur.fetchall()]
         cur.execute("SELECT count(*) FROM files")
     total = cur.fetchone()[0]
     cur.close()
@@ -708,7 +823,8 @@ def stats():
     cur.close()
     conn.close()
     return {"files": count, "bytes_total": total, "bytes_git": git_bytes,
-            "bytes_release": total - git_bytes, "top_files": top, "repos": STORAGE_REPOS}
+            "bytes_release": total - git_bytes, "top_files": top,
+            "repos": STORAGE_REPOS, "private_repos": PRIVATE_STORAGE_REPOS}
 
 
 WORKFLOW_FILES = {
@@ -733,12 +849,12 @@ def dashboard():
     cur.execute("SELECT count(*) FROM files WHERE status = 'deleted'")
     deleted = cur.fetchone()[0]
     cur.execute(
-        "SELECT id, name, size, store, status, url, created_at FROM files "
+        "SELECT id, name, size, store, status, url, created_at, private FROM files "
         "WHERE status <> 'deleted' ORDER BY created_at DESC LIMIT 20"
     )
     files = [
         {"id": r[0], "name": r[1], "size": r[2], "store": r[3], "status": r[4],
-         "url": r[5], "created_at": r[6].isoformat() if r[6] else None}
+         "url": r[5], "created_at": r[6].isoformat() if r[6] else None, "private": r[7]}
         for r in cur.fetchall()
     ]
     cur.execute("SELECT id, type, status, attempts, target_id, updated_at FROM jobs ORDER BY id DESC LIMIT 15")
@@ -790,7 +906,7 @@ def dashboard():
 
     return {
         "stats": {"files": fcount, "bytes_total": fbytes, "deleted": deleted,
-                  "repos": STORAGE_REPOS},
+                  "repos": STORAGE_REPOS, "private_repos": PRIVATE_STORAGE_REPOS},
         "tunnel_url": tunnel,
         "nodes": nodes,
         "sets": sets,

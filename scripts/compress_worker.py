@@ -37,13 +37,14 @@ def get_job(job_id: int):
 def get_file(file_id: str):
     conn = db()
     cur = conn.cursor()
-    cur.execute("SELECT id, name, mime, size, url FROM files WHERE id = %s", (file_id,))
+    cur.execute("SELECT id, name, mime, size, url, private FROM files WHERE id = %s", (file_id,))
     row = cur.fetchone()
     cur.close()
     conn.close()
     if not row:
         return None
-    return {"id": row[0], "name": row[1], "mime": row[2], "size": row[3], "url": row[4]}
+    return {"id": row[0], "name": row[1], "mime": row[2], "size": row[3], "url": row[4],
+            "private": row[5]}
 
 
 def set_status(job_id: int, status: str):
@@ -125,6 +126,12 @@ def main():
     if not f:
         set_status(args.job_id, "failed")
         sys.exit(1)
+    if f.get("private"):
+        # Private files are never re-hosted: the compressed copy would land
+        # in the public storage repo and leak the content.
+        set_status(args.job_id, "done")
+        print(f"[compress] skipping private file {f['id']}")
+        sys.exit(0)
 
     with httpx.Client(timeout=300) as client:
         r = client.get(f["url"])
