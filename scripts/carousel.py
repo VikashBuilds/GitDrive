@@ -60,7 +60,7 @@ GH = {
     "X-GitHub-Api-Version": "2022-11-28",
 }
 
-client = httpx.Client(timeout=httpx.Timeout(3600.0, connect=30.0))
+client = httpx.Client(timeout=httpx.Timeout(3600.0, connect=30.0), follow_redirects=True)
 app = FastAPI(title="GridCarousel Relay Node")
 
 
