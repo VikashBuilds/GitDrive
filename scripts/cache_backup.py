@@ -42,7 +42,7 @@ def resolve_url(url: str, base: str) -> str:
 def build_chunks():
     conn = db()
     cur = conn.cursor()
-    cur.execute("SELECT id, name, url FROM files ORDER BY created_at")
+    cur.execute("SELECT id, name, url, size FROM files WHERE status <> 'deleted' ORDER BY created_at")
     rows = cur.fetchall()
     cur.close()
     conn.close()
@@ -52,26 +52,36 @@ def build_chunks():
     chunks = []
     current = None
     current_size = 0
-    for fid, name, url in rows:
-        if current is None or current_size + len(url) > CHUNK_MAX:
+    for fid, name, url, size in rows:
+        if size > 100 * 1024 * 1024:
+            continue  # big files live durably as release assets / pool parts
+        if current is None or current_size + (size or len(url)) > CHUNK_MAX:
             current = {"name": f"backup/chunk-{len(chunks):03d}.tar.gz", "files": []}
             chunks.append(current)
             current_size = 0
         current["files"].append((fid, name, url))
-        current_size += len(url)
+        current_size += size or len(url)
 
     result = []
-    with httpx.Client(timeout=300) as client:
+    with httpx.Client(timeout=600) as client:
         for chunk in chunks:
             out_path = os.path.join(os.getcwd(), chunk["name"])
             with tarfile.open(out_path, "w:gz") as tar:
                 for fid, name, url in chunk["files"]:
-                    r = client.get(resolve_url(url, base))
-                    if r.status_code != 200:
+                    body = None
+                    for attempt in range(3):
+                        try:
+                            r = client.get(resolve_url(url, base))
+                            if r.status_code == 200:
+                                body = r.content
+                            break
+                        except httpx.HTTPError:
+                            continue
+                    if body is None:
                         continue
                     data = tarfile.TarInfo(name=f"{fid}_{name}")
-                    data.size = len(r.content)
-                    tar.addfile(data, __import__("io").BytesIO(r.content))
+                    data.size = len(body)
+                    tar.addfile(data, __import__("io").BytesIO(body))
             result.append({"chunk": chunk["name"].split("chunk-")[1].replace(".tar.gz", ""),
                            "path": os.path.abspath(out_path)})
     return result
