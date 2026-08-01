@@ -36,22 +36,37 @@ jobs:
           git config --global user.email "gitdrive@users.noreply.github.com"
 
       - name: Start cloudflared tunnel
+        env:
+          CF_TUNNEL_TOKEN: ${{ secrets.CF_TUNNEL_TOKEN }}
         run: |
           curl -sL --retry 3 https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /tmp/cloudflared
           chmod +x /tmp/cloudflared
-          /tmp/cloudflared tunnel --url http://localhost:8080 > /tmp/tunnel.log 2>&1 &
+          if [ -n "$CF_TUNNEL_TOKEN" ]; then
+            echo "Using named tunnel (api.vikashbuilds.in)"
+            /tmp/cloudflared tunnel --no-autoupdate run --token "$CF_TUNNEL_TOKEN" > /tmp/tunnel.log 2>&1 &
+            echo "url=https://api.vikashbuilds.in" >> $GITHUB_OUTPUT
+          else
+            echo "No CF_TUNNEL_TOKEN — falling back to quick tunnel"
+            /tmp/cloudflared tunnel --url http://localhost:8080 > /tmp/tunnel.log 2>&1 &
+          fi
           sleep 12
 
       - name: Read tunnel URL
         id: tunnel
+        env:
+          CF_TUNNEL_TOKEN: ${{ secrets.CF_TUNNEL_TOKEN }}
         run: |
-          URL=$(grep -oP 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/tunnel.log | head -1)
-          if [ -z "$URL" ]; then
-            echo "::warning::cloudflared produced no URL yet; retrying"
-            sleep 20
+          if [ -n "$CF_TUNNEL_TOKEN" ]; then
+            echo "url=https://api.vikashbuilds.in" >> $GITHUB_OUTPUT
+          else
             URL=$(grep -oP 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/tunnel.log | head -1)
+            if [ -z "$URL" ]; then
+              echo "::warning::cloudflared produced no URL yet; retrying"
+              sleep 20
+              URL=$(grep -oP 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/tunnel.log | head -1)
+            fi
+            echo "url=$URL" >> $GITHUB_OUTPUT
           fi
-          echo "url=$URL" >> $GITHUB_OUTPUT
 
       - name: Publish tunnel URL to DB
         env:
