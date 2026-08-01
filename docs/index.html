@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="upgrade-insecure-requests">
 <title>GitDrive — My Storage Dashboard</title>
 <style>
   :root { --bg:#0b0f14; --panel:#131a22; --line:#1f2a35; --txt:#e6edf5; --dim:#8b9cae;
@@ -116,8 +117,9 @@
 <script>
 const LS_BASE = "gd_api_base", LS_KEY = "gd_api_key";
 const FIXED_BASE = "https://api.vikashbuilds.in";
-let base = localStorage.getItem(LS_BASE) || FIXED_BASE;
-let lastTunnels = JSON.parse(localStorage.getItem("gd_tunnels") || "[]");
+const httpsize = u => String(u || "").trim().replace(/^http:/i, "https:").replace(/\/+$/, "");
+let base = httpsize(localStorage.getItem(LS_BASE) || FIXED_BASE);
+let lastTunnels = JSON.parse(localStorage.getItem("gd_tunnels") || "[]").map(httpsize);
 const WF_INFO = {
   "upload-service": ["API server", "Handles uploads and feeds this dashboard."],
   "verify":         ["Daily self-check", "Tests all storage tiers, once a day."],
@@ -143,7 +145,7 @@ function headers(){ return {"X-API-Key": localStorage.getItem(LS_KEY) || ""}; }
 async function fetchDash(u){ return await tryFetch(u + "/v1/dashboard", {headers: headers()}); }
 
 async function refresh(){
-  const candidates = [base, FIXED_BASE, ...lastTunnels.filter(u => u !== base && u !== FIXED_BASE)];
+  const candidates = [base, FIXED_BASE, ...lastTunnels.filter(u => u !== base && u !== FIXED_BASE)].map(httpsize);
   const seen = new Set(); let ok = false;
   for(const u of candidates){
     if(!u || seen.has(u)) continue; seen.add(u);
@@ -370,7 +372,7 @@ async function uploadBig(file){
 }
 
 function saveSettings(){
-  base = document.getElementById("apiBase").value.trim().replace(/\/+$/, "") || FIXED_BASE;
+  base = httpsize(document.getElementById("apiBase").value) || FIXED_BASE;
   localStorage.setItem(LS_BASE, base);
   const k = document.getElementById("apiKey").value.trim();
   if(k) localStorage.setItem(LS_KEY, k);
