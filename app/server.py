@@ -647,12 +647,14 @@ def list_files(limit: int = 50, offset: int = 0, mime: str | None = None):
     if mime:
         cur.execute("SELECT id, name, size, mime, url, created_at FROM files WHERE mime LIKE %s ORDER BY created_at DESC LIMIT %s OFFSET %s",
                     (mime + "%", limit, offset))
+        items = [{"id": r[0], "name": r[1], "size": r[2], "mime": r[3], "url": r[4],
+                  "created_at": r[5].isoformat()} for r in cur.fetchall()]
         cur.execute("SELECT count(*) FROM files WHERE mime LIKE %s", (mime + "%",))
     else:
         cur.execute("SELECT id, name, size, mime, url, created_at FROM files ORDER BY created_at DESC LIMIT %s OFFSET %s", (limit, offset))
+        items = [{"id": r[0], "name": r[1], "size": r[2], "mime": r[3], "url": r[4],
+                  "created_at": r[5].isoformat()} for r in cur.fetchall()]
         cur.execute("SELECT count(*) FROM files")
-    items = [{"id": r[0], "name": r[1], "size": r[2], "mime": r[3], "url": r[4],
-              "created_at": r[5].isoformat()} for r in cur.fetchall()]
     total = cur.fetchone()[0]
     cur.close()
     conn.close()
