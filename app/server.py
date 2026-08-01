@@ -13,7 +13,7 @@ from urllib.parse import quote
 import httpx
 import psycopg2
 import uvicorn
-from fastapi import FastAPI, File, Header, HTTPException, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 
 DB_URL = os.environ["DB_URL"]
@@ -136,18 +136,6 @@ def release_upload(data: bytes, name: str, mime: str, tag: str, repo: str) -> st
         f"https://uploads.github.com/repos/{repo}/releases/{release_id}/assets?name={quote(name)}",
         headers={**GH, "Content-Type": mime or "application/octet-stream"},
         content=data,
-    )
-    r.raise_for_status()
-    return f"https://github.com/{repo}/releases/download/{tag}/{quote(name)}"
-
-
-def release_upload_stream(gen, name: str, mime: str, tag: str, repo: str) -> str:
-    """Upload a release asset from a streaming body (no full RAM copy)."""
-    release_id = ensure_release(tag, repo)
-    r = _gh.post(
-        f"https://uploads.github.com/repos/{repo}/releases/{release_id}/assets?name={quote(name)}",
-        headers={**GH, "Content-Type": mime or "application/octet-stream"},
-        content=gen,
     )
     r.raise_for_status()
     return f"https://github.com/{repo}/releases/download/{tag}/{quote(name)}"
@@ -449,6 +437,13 @@ def finalize_upload(name: str, mime: str, data_path: str, expires: datetime | No
         # durably as release-asset parts (survives runner rotation), then a
         # carousel node drains the parts into its set whenever it boots.
         tag = "pool-" + fid
+        # Idempotent part upload: skip parts already on the release (a
+        # previous attempt may have died mid-way).
+        release_id = ensure_release(tag, repo)
+        r = _gh.get(f"https://api.github.com/repos/{repo}/releases/tags/{tag}", headers=GH)
+        existing = {}
+        if r.status_code == 200:
+            existing = {a["name"]: a["browser_download_url"] for a in r.json().get("assets", [])}
         parts = []
         with open(data_path, "rb") as fh:
             idx = 0
@@ -457,19 +452,27 @@ def finalize_upload(name: str, mime: str, data_path: str, expires: datetime | No
                 if base >= size:
                     break
                 end = min(base + POOL_PART_MAX, size)
-
-                def part_gen(fh=fh, start=base, stop=end):
-                    fh.seek(start)
-                    remaining = stop - start
-                    while remaining > 0:
-                        chunk = fh.read(min(1 << 20, remaining))
-                        if not chunk:
-                            break
-                        remaining -= len(chunk)
-                        yield chunk
-
                 part_name = f"{name}.p{idx:03d}"
-                part_url = release_upload_stream(part_gen(), part_name, mime, tag, repo)
+                if part_name in existing:
+                    part_url = existing[part_name]
+                else:
+                    def part_gen(fh=fh, start=base, stop=end):
+                        fh.seek(start)
+                        remaining = stop - start
+                        while remaining > 0:
+                            chunk = fh.read(min(1 << 20, remaining))
+                            if not chunk:
+                                break
+                            remaining -= len(chunk)
+                            yield chunk
+
+                    rr = _gh.post(
+                        f"https://uploads.github.com/repos/{repo}/releases/{release_id}/assets?name={quote(part_name)}",
+                        headers={**GH, "Content-Type": mime or "application/octet-stream"},
+                        content=part_gen(),
+                    )
+                    rr.raise_for_status()
+                    part_url = rr.json()["browser_download_url"]
                 parts.append({"url": part_url, "size": end - base})
                 idx += 1
         parts_json = json.dumps(parts)
@@ -575,19 +578,31 @@ async def upload_chunk(fid: str, offset: int, request: Request, x_api_key: str =
 
 
 @app.post("/v1/upload/complete/{fid}")
-async def upload_complete(fid: str, x_api_key: str = Header("")):
-    """Finalize a chunked upload: hash, dedupe, tier decision, DB row."""
+async def upload_complete(fid: str, background: BackgroundTasks, x_api_key: str = Header("")):
+    """Finalize a chunked upload in the background; returns immediately.
+
+    The heavy work (hash + release-asset parts) exceeds the edge timeout, so
+    the client should poll GET /v1/file/{fid} for status='ready'.
+    """
     check_key(x_api_key)
     path = os.path.join(BUFFER_DIR, f"{fid}.up")
     meta_path = os.path.join(BUFFER_DIR, f"{fid}.meta")
     if not os.path.exists(path) or not os.path.exists(meta_path):
+        conn = db()
+        cur = conn.cursor()
+        cur.execute("SELECT status FROM files WHERE id = %s", (fid,))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        if row:
+            return {"id": fid, "status": row[0], "note": "already finalized"}
         raise HTTPException(404, "upload session not found")
     with open(meta_path) as fh:
         meta = json.load(fh)
     if os.path.getsize(path) != meta["total_size"]:
         raise HTTPException(400, f"incomplete upload: {os.path.getsize(path)}/{meta['total_size']}")
-    os.remove(meta_path)
-    return finalize_upload(meta["name"], meta["mime"], path)
+    background.add_task(finalize_upload, meta["name"], meta["mime"], path)
+    return {"id": fid, "status": "processing", "note": "finalizing in background; poll /v1/file/{id}"}
 
 
 @app.get("/v1/file/{file_id}")

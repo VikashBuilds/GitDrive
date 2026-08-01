@@ -18,6 +18,7 @@ offset triggers a 409, after which the client re-syncs from the server.
 import argparse
 import json
 import os
+import time
 
 import httpx
 
@@ -76,9 +77,17 @@ def main():
 
         r = c.post(f"{args.api}/v1/upload/complete/{fid}", headers=headers)
         r.raise_for_status()
-        result = r.json()
-        print(f"[chunk] COMPLETE: id={result['id']} size={result['size'] / (1024**3):.2f} GB "
-              f"status={result['status']} store={result.get('store', 'n/a')} url={result.get('url') or result.get('note')}")
+        print(f"[chunk] complete accepted: {r.json()}")
+        for _ in range(120):
+            r = c.get(f"{args.api}/v1/file/{fid}", headers=headers)
+            if r.status_code == 200:
+                result = r.json()
+                print(f"[chunk] FINAL: id={result['id']} size={result['size'] / (1024**3):.2f} GB "
+                      f"status={result['status']} url={result.get('url') or '(none — pool, waiting for drain)'}")
+                break
+            time.sleep(5)
+        else:
+            raise SystemExit("timed out waiting for finalize")
         if os.path.exists(state_path):
             os.remove(state_path)
 
