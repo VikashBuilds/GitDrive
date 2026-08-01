@@ -398,16 +398,53 @@ async function downloadFile(id){
   const f = fileById(id);
   if(!f) return;
   if(f.enc && !encMaster){ toast("This file is encrypted — unlock with your master password to download it.", 6000); return; }
+  if(f.enc){ return downloadEncrypted(f); }
+  const BIG = 1024 * 1024 * 1024; // ≥1 GB files are streamed to disk, never buffered in RAM
+  if(f.size >= BIG && "showSaveFilePicker" in window){
+    try {
+      const res = await fetch(base + "/v1/download/" + id, {headers: headers()});
+      if(!res.ok) throw new Error("HTTP " + res.status);
+      const handle = await window.showSaveFilePicker({suggestedName: f.name});
+      const writable = await handle.createWritable();
+      await res.body.pipeTo(writable);
+      await writable.close();
+      toast("Saved to disk ✔ " + f.name, 5000);
+    } catch(e){ toast("Download failed: " + e.message, 6000); }
+    return;
+  }
+  if(f.size >= BIG){
+    const apiKey = localStorage.getItem(LS_KEY) || "";
+    const a = document.createElement("a");
+    a.href = base + "/v1/download/" + id + "?key=" + encodeURIComponent(apiKey);
+    a.download = f.name;
+    document.body.appendChild(a); a.click(); a.remove();
+    toast("Download started — it streams to your Downloads folder (" + fmtBytes(f.size) + ").", 6000);
+    return;
+  }
   try {
     const res = await fetch(base + "/v1/download/" + id, {headers: headers()});
     if(!res.ok) throw new Error("HTTP " + res.status + (res.status === 401 ? " (bad API key?)" : ""));
-    const blob = f.enc ? await decryptStream(res, id) : await res.blob();
+    const blob = await res.blob();
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = f.name;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 30000);
     toast("Downloaded ✔ " + f.name, 5000);
+  } catch(e){ toast("Download failed: " + e.message, 6000); }
+}
+
+async function downloadEncrypted(f){
+  try {
+    const res = await fetch(base + "/v1/download/" + f.id, {headers: headers()});
+    if(!res.ok) throw new Error("HTTP " + res.status + (res.status === 401 ? " (bad API key?)" : ""));
+    const blob = await decryptStream(res, f.id);
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = f.name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+    toast("Downloaded & decrypted ✔ " + f.name, 5000);
   } catch(e){ toast("Download failed: " + e.message, 6000); }
 }
 
