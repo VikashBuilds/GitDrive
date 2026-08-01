@@ -440,14 +440,6 @@ def finalize_upload(name: str, mime: str, data_path: str, expires: datetime | No
         store = "pool"
         status = "buffered"
         tag = None
-        conn2 = db()
-        conn2.autocommit = True
-        cur2 = conn2.cursor()
-        cur2.execute(
-            "INSERT INTO jobs (type, target_id) VALUES ('pool-store', %s)", (fid,),
-        )
-        cur2.close()
-        conn2.close()
 
     cur.execute(
         "INSERT INTO files (id, sha, name, size, mime, store, path, release_tag, url, expires_at, set_id, repo, status) "
@@ -457,6 +449,16 @@ def finalize_upload(name: str, mime: str, data_path: str, expires: datetime | No
     conn.commit()
     cur.close()
     conn.close()
+
+    if store == "pool":
+        conn2 = db()
+        conn2.autocommit = True
+        cur2 = conn2.cursor()
+        cur2.execute(
+            "INSERT INTO jobs (type, target_id) VALUES ('pool-store', %s)", (fid,),
+        )
+        cur2.close()
+        conn2.close()
 
     enqueue_compress(fid, size, mime)
     note = "queued for relay pool" if store == "pool" else None
