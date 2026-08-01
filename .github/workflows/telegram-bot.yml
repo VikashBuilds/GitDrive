@@ -16,7 +16,7 @@ permissions:
 jobs:
   bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 360
 
     steps:
       - name: Checkout
@@ -30,16 +30,16 @@ jobs:
       - name: Install deps
         run: pip install httpx psycopg2-binary
 
-      - name: Run bot (50 min shift)
+      - name: Run bot (6 h shift)
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           DB_URL: ${{ secrets.GITDRIVE_DB_URL }}
           GITDRIVE_API_KEYS: ${{ secrets.GITDRIVE_API_KEYS }}
           BOT_ALLOW_CHAT_ID: ${{ secrets.BOT_ALLOW_CHAT_ID }}
-          RUN_MINUTES: '50'
+          RUN_MINUTES: '355'
         run: |
           python scripts/telegram_bot.py &
-          sleep 3000 && kill %1 || true
+          sleep 21300 && kill %1 || true
 
       - name: Chain next run
         if: always()
