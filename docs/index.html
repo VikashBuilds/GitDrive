@@ -159,7 +159,7 @@ let lastData = null;
 // ---------- E2E encryption (WebCrypto, all client-side) ----------
 // Master key from password (PBKDF2) → per-file key (HKDF) → AES-256-GCM.
 // Ciphertext is stored on GitHub; without the password it's unreadable.
-let encMaster = null;            // CryptoKey — lives only in this tab
+let encMaster = null;            // raw 32-byte master key — lives only in this tab
 const ECHUNK = 1024 * 1024;      // 1 MiB plaintext per cipher chunk
 const ENCMAGIC = new Uint8Array([0x47,0x44,0x45,0x4e,0x43,0x31]); // "GDENC1"
 
@@ -173,14 +173,14 @@ async function deriveMaster(password){
   let saltHex = localStorage.getItem("gd_enc_salt");
   const salt = saltHex ? unb64(saltHex) : crypto.getRandomValues(new Uint8Array(16));
   if(!saltHex) localStorage.setItem("gd_enc_salt", b64(salt));
-  const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveKey"]);
-  return crypto.subtle.deriveKey({name:"PBKDF2", salt, iterations:200000, hash:"SHA-256"}, base,
-      {name:"AES-GCM", length:256}, false, ["encrypt","decrypt"]);
+  const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"]);
+  return new Uint8Array(await crypto.subtle.deriveBits({name:"PBKDF2", salt, iterations:200000, hash:"SHA-256"}, base, 256));
 }
 async function fileKey(fileId){
   const info = new TextEncoder().encode("gitdrive:e2e:" + fileId);
+  const base = await crypto.subtle.importKey("raw", encMaster, "HKDF", false, ["deriveKey"]);
   return crypto.subtle.deriveKey({name:"HKDF", hash:"SHA-256", salt:new Uint8Array(16), info},
-      encMaster, {name:"AES-GCM", length:256}, false, ["encrypt","decrypt"]);
+      base, {name:"AES-GCM", length:256}, false, ["encrypt","decrypt"]);
 }
 
 async function encryptSlice(slice, fileId, startIdx, first){
