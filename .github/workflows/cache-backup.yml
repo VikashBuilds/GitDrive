@@ -27,6 +27,7 @@ jobs:
         id: chunks
         env:
           DB_URL: ${{ secrets.GITDRIVE_DB_URL }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           echo "matrix=$(python scripts/cache_backup.py --build-chunks)" >> $GITHUB_OUTPUT
           echo "date=$(date +%Y%m%d)" >> $GITHUB_OUTPUT
@@ -53,7 +54,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install deps
-        run: pip install httpx
+        run: pip install httpx psycopg2-binary
       - name: Prune old snapshots
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}

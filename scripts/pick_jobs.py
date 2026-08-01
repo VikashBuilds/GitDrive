@@ -13,9 +13,12 @@ def pick(limit: int, job_type: str) -> str:
     cur = conn.cursor()
     cur.execute(
         """
-        SELECT id, target_id FROM jobs
-        WHERE type = %s AND status = 'queued'
-        ORDER BY id
+        SELECT j.id, j.target_id FROM jobs j
+        JOIN files f ON f.id = j.target_id
+        WHERE j.type = %s AND j.status = 'queued'
+          AND f.url LIKE '%%/files/%%'
+          AND f.size <= 52428800
+        ORDER BY j.id
         LIMIT %s
         FOR UPDATE SKIP LOCKED
         """,
