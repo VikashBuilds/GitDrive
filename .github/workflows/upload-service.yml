@@ -46,6 +46,11 @@ jobs:
         id: tunnel
         run: |
           URL=$(grep -oP 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/tunnel.log | head -1)
+          if [ -z "$URL" ]; then
+            echo "::warning::cloudflared produced no URL yet; retrying"
+            sleep 20
+            URL=$(grep -oP 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/tunnel.log | head -1)
+          fi
           echo "url=$URL" >> $GITHUB_OUTPUT
 
       - name: Publish tunnel URL to DB
@@ -55,12 +60,16 @@ jobs:
         run: |
           python - <<'EOF'
           import os, psycopg2
+          url = os.environ.get("TUNNEL_URL", "").strip()
+          if not url:
+              print("tunnel URL empty — keeping previous value in DB")
+              raise SystemExit(0)
           conn = psycopg2.connect(os.environ["DB_URL"])
           cur = conn.cursor()
           cur.execute(
               "INSERT INTO meta (k, v) VALUES ('tunnel_url', %s) "
               "ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v, updated_at = now()",
-              (os.environ.get("TUNNEL_URL", ""),),
+              (url,),
           )
           conn.commit()
           cur.close(); conn.close()
