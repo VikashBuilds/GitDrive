@@ -72,6 +72,7 @@
 
 <script>
 const LS_BASE = "gd_api_base", LS_KEY = "gd_api_key";
+const FIXED_BASE = "https://api.vikashbuilds.in";
 let base = localStorage.getItem(LS_BASE) || "";
 let lastTunnels = JSON.parse(localStorage.getItem("gd_tunnels") || "[]");
 
@@ -93,7 +94,8 @@ async function refresh(manual){
   const st = document.getElementById("status");
   const candidates = [];
   if(base) candidates.push(base);
-  for(const u of lastTunnels) if(u !== base) candidates.push(u);
+  candidates.push(FIXED_BASE);
+  for(const u of lastTunnels) if(u !== base && u !== FIXED_BASE) candidates.push(u);
   candidates.push(""); // placeholder: no base configured yet
   for(const u of candidates){
     try {
