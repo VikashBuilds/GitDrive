@@ -3,188 +3,307 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>GitDrive Control Grid</title>
+<title>GitDrive — My Storage Dashboard</title>
 <style>
-  :root { --bg:#0b0f14; --panel:#131a22; --line:#1f2a35; --txt:#dbe4ee; --dim:#7d8fa0; --ok:#34d399; --warn:#fbbf24; --bad:#f87171; --acc:#38bdf8; }
+  :root { --bg:#0b0f14; --panel:#131a22; --line:#1f2a35; --txt:#e6edf5; --dim:#8b9cae;
+          --ok:#34d399; --okbg:#0c3a2c; --warn:#fbbf24; --warnbg:#3a2f0c; --bad:#f87171; --badbg:#3a1212;
+          --acc:#38bdf8; --accbg:#0e2f42; }
   * { box-sizing:border-box; margin:0; padding:0; }
-  body { background:var(--bg); color:var(--txt); font:14px/1.45 ui-monospace,Consolas,monospace; padding:20px; }
-  header { display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin-bottom:18px; }
-  h1 { font-size:18px; letter-spacing:.5px; }
-  h1 .dot { color:var(--ok); }
-  .bar { margin-left:auto; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
-  input { background:#0d141b; border:1px solid var(--line); color:var(--txt); padding:6px 8px; border-radius:6px; font:inherit; width:340px; }
-  button { background:var(--panel); border:1px solid var(--line); color:var(--txt); padding:6px 12px; border-radius:6px; cursor:pointer; font:inherit; }
+  body { background:var(--bg); color:var(--txt); font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; padding:20px; max-width:1100px; margin:0 auto; }
+  a { color:var(--acc); text-decoration:none; } a:hover { text-decoration:underline; }
+  header { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:14px; }
+  h1 { font-size:22px; font-weight:700; } h1 .dot { color:var(--ok); }
+  .statusline { margin-left:auto; font-size:13px; color:var(--dim); display:flex; align-items:center; gap:8px; }
+  .pill { padding:4px 12px; border-radius:999px; font-size:12px; font-weight:600; }
+  .pill.ok { background:var(--okbg); color:var(--ok); } .pill.bad { background:var(--badbg); color:var(--bad); } .pill.warn { background:var(--warnbg); color:var(--warn); }
+  .banner { border-radius:12px; padding:14px 18px; margin-bottom:16px; font-size:15px; font-weight:600; display:none; }
+  .banner.ok { background:var(--okbg); color:var(--ok); } .banner.warn { background:var(--warnbg); color:var(--warn); } .banner.bad { background:var(--badbg); color:var(--bad); }
+  .banner small { font-weight:400; display:block; margin-top:3px; opacity:.9; }
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:14px; margin-bottom:16px; }
+  .stat { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px; }
+  .stat .lbl { font-size:12px; text-transform:uppercase; letter-spacing:.8px; color:var(--dim); }
+  .stat .val { font-size:30px; font-weight:700; margin-top:4px; }
+  .stat .sub { font-size:12px; color:var(--dim); margin-top:2px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:18px; margin-bottom:16px; }
+  .card h2 { font-size:15px; font-weight:700; margin-bottom:12px; }
+  .card h2 .hint { font-weight:400; font-size:12px; color:var(--dim); }
+  .drop { border:2px dashed var(--line); border-radius:10px; padding:22px; text-align:center; color:var(--dim); cursor:pointer; transition:.15s; }
+  .drop.over, .drop:hover { border-color:var(--acc); color:var(--txt); }
+  input[type=text], input[type=password] { background:#0d141b; border:1px solid var(--line); color:var(--txt); padding:8px 10px; border-radius:8px; font:inherit; }
+  button { background:var(--accbg); border:1px solid #1e4a63; color:var(--acc); padding:8px 14px; border-radius:8px; cursor:pointer; font:inherit; font-weight:600; }
   button:hover { border-color:var(--acc); }
-  .st { font-size:12px; color:var(--dim); }
-  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(250px,1fr)); gap:14px; margin-bottom:14px; }
-  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; }
-  .card h2 { font-size:12px; text-transform:uppercase; letter-spacing:1px; color:var(--dim); margin-bottom:10px; }
-  .big { font-size:26px; font-weight:700; }
-  .row { display:flex; justify-content:space-between; padding:3px 0; border-bottom:1px dashed var(--line); }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  button.danger { background:var(--badbg); border-color:#5b2020; color:var(--bad); }
+  button.small { padding:4px 10px; font-size:13px; border-radius:6px; }
+  .row { display:flex; align-items:center; gap:10px; padding:9px 4px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
   .row:last-child { border-bottom:none; }
-  .chip { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; }
-  .ok { background:#0c3a2c; color:var(--ok); } .warn { background:#3a2f0c; color:var(--warn); } .bad { background:#3a1212; color:var(--bad); }
-  table { width:100%; border-collapse:collapse; font-size:12px; }
-  th,td { text-align:left; padding:5px 8px; border-bottom:1px solid var(--line); white-space:nowrap; }
-  th { color:var(--dim); font-weight:600; }
-  td a { color:var(--acc); text-decoration:none; }
+  .fname { font-weight:600; word-break:break-all; }
+  .fmeta { font-size:12px; color:var(--dim); }
+  .acts { margin-left:auto; display:flex; gap:6px; flex-wrap:wrap; }
+  .chip { display:inline-block; padding:2px 10px; border-radius:999px; font-size:11px; font-weight:600; }
+  .chip.ok { background:var(--okbg); color:var(--ok); } .chip.warn { background:var(--warnbg); color:var(--warn); } .chip.bad { background:var(--badbg); color:var(--bad); }
+  .worker { display:flex; align-items:center; gap:12px; padding:10px 4px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  .worker:last-child { border-bottom:none; }
+  .wname { font-weight:600; min-width:180px; }
+  .wdesc { font-size:12px; color:var(--dim); }
+  .wlast { font-size:12px; color:var(--dim); margin-left:auto; }
+  details { margin-top:8px; } summary { cursor:pointer; color:var(--dim); font-size:13px; }
+  pre { background:#0a0e13; border:1px solid var(--line); border-radius:8px; padding:12px; overflow:auto; font-size:12px; color:var(--dim); margin-top:8px; max-height:400px; }
+  .toast { position:fixed; bottom:20px; right:20px; background:#0d141b; border:1px solid var(--line); border-radius:10px; padding:12px 16px; font-size:14px; box-shadow:0 8px 24px rgba(0,0,0,.5); display:none; max-width:380px; }
+  .toast a { font-weight:600; }
+  .empty { color:var(--dim); padding:14px 4px; font-size:14px; }
+  .inline { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:10px; }
   .muted { color:var(--dim); }
-  .sec { margin-top:16px; }
-  .wf { display:flex; align-items:center; gap:10px; padding:7px 0; border-bottom:1px dashed var(--line); flex-wrap:wrap; }
-  .wf b { min-width:150px; }
-  .wf .btns { margin-left:auto; display:flex; gap:6px; }
-  .last { font-size:12px; color:var(--dim); margin-left:auto; }
-  .err { color:var(--bad); font-size:12px; margin-top:6px; }
-  @media (max-width:700px){ input{ width:100%; } .bar{ margin-left:0; width:100%; } }
+  .keyring { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:10px; }
+  .keyring input[type=password] { width:280px; }
+  @media (max-width:700px){ .wlast, .acts { margin-left:0; } }
 </style>
 </head>
 <body>
 <header>
-  <h1>GitDrive <span class="dot">●</span> Control Grid</h1>
-  <div class="bar">
-    <input id="apiBase" placeholder="API base URL (e.g. https://xxx.trycloudflare.com)">
-    <button onclick="saveBase()">Save</button>
-    <input id="apiKey" type="password" placeholder="API key (for Run buttons)" style="width:230px">
-    <button onclick="saveKey()">Save key</button>
-    <button onclick="refresh(true)">Refresh</button>
-    <span class="st" id="status">idle</span>
-  </div>
+  <h1>GitDrive <span class="dot">●</span></h1>
+  <div class="statusline"><span id="updated">connecting…</span><span class="pill ok" id="livePill">connecting</span></div>
 </header>
 
-<div class="grid">
-  <div class="card"><h2>Storage</h2><div class="big" id="sFiles">–</div><div class="st" id="sBytes"></div>
-    <div class="row" style="margin-top:8px"><span>deleted</span><span id="sDel">–</span></div>
-    <div class="row"><span>repos</span><span id="sRepos">–</span></div>
-    <div class="row"><span>server uptime</span><span id="sUp">–</span></div>
-  </div>
-  <div class="card"><h2>Nodes</h2><div id="nodes" style="max-height:260px;overflow:auto"></div></div>
-  <div class="card"><h2>Tunnel</h2><div class="st" id="tunnel">–</div><div style="margin-top:8px;font-size:12px">All storage is served through this rotating tunnel; files page is for management only.</div></div>
-  <div class="card"><h2>Jobs</h2><div id="jobs" style="max-height:260px;overflow:auto"></div></div>
+<div class="banner" id="banner"></div>
+
+<div class="stats">
+  <div class="stat"><div class="lbl">Files stored</div><div class="val" id="sFiles">–</div><div class="sub" id="sDel"></div></div>
+  <div class="stat"><div class="lbl">Storage used</div><div class="val" id="sBytes">–</div><div class="sub">across 5 GitHub repositories</div></div>
+  <div class="stat"><div class="lbl">Machines working</div><div class="val" id="sNodes">–</div><div class="sub" id="sNodeSub">background pool nodes</div></div>
+  <div class="stat"><div class="lbl">Pending tasks</div><div class="val" id="sJobs">–</div><div class="sub">queued in the pipeline</div></div>
 </div>
 
-<div class="card sec"><h2>Sets (20)</h2><div id="sets"></div></div>
+<div class="card">
+  <h2>Upload a file <span class="hint">— up to 100 MB here; bigger files: send them to the Telegram bot</span></h2>
+  <div class="drop" id="drop">Drop a file here, or click to choose one</div>
+  <div class="inline"><span class="muted" id="upMsg"></span></div>
+  <input type="file" id="fileInput" hidden>
+</div>
 
-<div class="card sec"><h2>Workflow control</h2><div id="workflows"></div></div>
+<div class="card">
+  <h2>Your files</h2>
+  <input type="text" id="search" placeholder="Search by name…" style="width:100%; margin-bottom:10px">
+  <div id="files"><div class="empty">loading…</div></div>
+</div>
 
-<div class="card sec"><h2>Recent files</h2><div style="overflow:auto"><table id="files"><thead>
-  <tr><th>id</th><th>name</th><th>size</th><th>store</th><th>status</th><th>created</th></tr></thead><tbody></tbody>
-</table></div></div>
+<div class="card">
+  <h2>Background workers <span class="hint">— these run automatically</span></h2>
+  <div id="workers"></div>
+</div>
+
+<details id="adv">
+  <summary>Advanced — raw status, nodes, sets &amp; connection settings</summary>
+  <div class="keyring">
+    <input type="text" id="apiBase" placeholder="API URL" value="https://api.vikashbuilds.in">
+    <input type="password" id="apiKey" placeholder="API key (for Delete / Run buttons)">
+    <button onclick="saveSettings()">Save</button>
+  </div>
+  <div id="sets"></div>
+  <pre id="raw">…</pre>
+</details>
+
+<div class="toast" id="toast"></div>
 
 <script>
 const LS_BASE = "gd_api_base", LS_KEY = "gd_api_key";
 const FIXED_BASE = "https://api.vikashbuilds.in";
-let base = localStorage.getItem(LS_BASE) || "";
+let base = localStorage.getItem(LS_BASE) || FIXED_BASE;
 let lastTunnels = JSON.parse(localStorage.getItem("gd_tunnels") || "[]");
+const WF_INFO = {
+  "upload-service": ["API server", "Handles uploads and feeds this dashboard."],
+  "verify":         ["Daily self-check", "Tests all storage tiers, once a day."],
+  "telegram":       ["Telegram bot", "Upload and manage files from Telegram."],
+  "carousel":       ["Storage pool nodes", "Keep big files alive and moving."],
+  "prune":          ["Cleanup & expiry", "Deletes expired files daily."],
+  "compress":       ["Compression farm", "Shrinks images and videos."],
+  "cache-backup":   ["Backup cache", "Extra mirror for hot files."],
+  "supervisor":     ["Node watchguard", "Restarts any dead pool node."],
+};
+let lastData = null;
 
-function saveBase(){ base = document.getElementById("apiBase").value.trim().replace(/\/+$/,"");
-  localStorage.setItem(LS_BASE, base); remember(base); refresh(true); }
-function remember(u){ if(u && !lastTunnels.includes(u)){ lastTunnels.unshift(u); lastTunnels = lastTunnels.slice(0,5); localStorage.setItem("gd_tunnels", JSON.stringify(lastTunnels)); } }
+function toast(html, ms){ const t = document.getElementById("toast");
+  t.innerHTML = html; t.style.display = "block"; clearTimeout(t._h); t._h = setTimeout(()=>t.style.display="none", ms||6000); }
+function copyText(t){ navigator.clipboard.writeText(t).then(()=>toast("Link copied to clipboard ✔", 2500)); }
 
 async function tryFetch(url, opts){
   const res = await fetch(url, opts);
   if(!res.ok) throw new Error("HTTP " + res.status);
   return res.json();
 }
-async function fetchDash(baseUrl){
-  return await tryFetch(baseUrl + "/v1/dashboard", {headers:{"X-API-Key": localStorage.getItem(LS_KEY)||""}});
-}
+function headers(){ return {"X-API-Key": localStorage.getItem(LS_KEY) || ""}; }
+async function fetchDash(u){ return await tryFetch(u + "/v1/dashboard", {headers: headers()}); }
 
-let failed = false;
-async function refresh(manual){
-  const st = document.getElementById("status");
-  const candidates = [];
-  if(base) candidates.push(base);
-  candidates.push(FIXED_BASE);
-  for(const u of lastTunnels) if(u !== base && u !== FIXED_BASE) candidates.push(u);
-  candidates.push(""); // placeholder: no base configured yet
+async function refresh(){
+  const candidates = [base, FIXED_BASE, ...lastTunnels.filter(u => u !== base && u !== FIXED_BASE)];
+  const seen = new Set(); let ok = false;
   for(const u of candidates){
+    if(!u || seen.has(u)) continue; seen.add(u);
     try {
-      if(!u) throw new Error("no base configured");
       const d = await fetchDash(u);
-      remember(d.tunnel_url);
-      if(!base || d.tunnel_url) base = u; // stay on the working one
-      render(d); failed = false;
-      st.textContent = "live @ " + u.replace(/^https:\/\//,"").slice(0,40);
-      st.style.color = "var(--ok)";
-      return;
-    } catch(e){ /* try next */ }
+      lastTunnels = [u, ...lastTunnels.filter(x => x !== u)].slice(0,5);
+      localStorage.setItem("gd_tunnels", JSON.stringify(lastTunnels));
+      base = u; render(d); ok = true; break;
+    } catch(e){}
   }
-  failed = true;
-  st.textContent = "offline — no reachable API; set the base URL above";
-  st.style.color = "var(--bad)";
+  if(!ok){
+    document.getElementById("livePill").className = "pill bad";
+    document.getElementById("livePill").textContent = "offline";
+    document.getElementById("updated").textContent = "can't reach the server";
+    const b = document.getElementById("banner");
+    b.className = "banner bad"; b.style.display = "block";
+    b.innerHTML = "Can't reach the GitDrive server.<small>It restarts every ~30 minutes. Try again in a minute — or check that the API URL below is correct.</small>";
+  }
+}
+function setLive(){
+  document.getElementById("livePill").className = "pill ok";
+  document.getElementById("livePill").textContent = "connected";
+  document.getElementById("updated").textContent = "updated just now";
+  document.getElementById("banner").style.display = "none";
 }
 function fmtBytes(n){ if(n == null) return "–"; if(n >= 1e9) return (n/1e9).toFixed(2)+" GB"; if(n >= 1e6) return (n/1e6).toFixed(1)+" MB"; if(n >= 1e3) return (n/1e3).toFixed(0)+" KB"; return n+" B"; }
 function ago(iso){ if(!iso) return "–"; const s = (Date.now() - new Date(iso).getTime())/1000;
-  if(s < 90) return Math.round(s)+"s ago"; if(s < 5400) return Math.round(s/60)+"m ago"; return Math.round(s/3600)+"h ago"; }
+  if(s < 90) return "just now"; if(s < 5400) return Math.round(s/60)+" min ago"; return Math.round(s/3600)+" h ago"; }
+function stale(iso){ return !iso || Date.now() - new Date(iso).getTime() > 10*60*1000; }
 
 function render(d){
+  lastData = d; setLive();
   const s = d.stats;
   document.getElementById("sFiles").textContent = s.files;
   document.getElementById("sBytes").textContent = fmtBytes(s.bytes_total);
-  document.getElementById("sDel").textContent = s.deleted;
-  document.getElementById("sRepos").textContent = s.repos.map(r=>r.split("/")[1]).join(", ");
-  document.getElementById("sUp").textContent = Math.round(d.server_uptime_s/3600)+"h";
-  document.getElementById("tunnel").textContent = d.tunnel_url || "–";
+  document.getElementById("sDel").textContent = s.deleted ? s.deleted + " deleted" : "";
+  const active = d.nodes.filter(n => n.status === "active" && !stale(n.last_seen)).length;
+  document.getElementById("sNodes").textContent = active;
+  document.getElementById("sNodeSub").textContent = active + " of " + d.nodes.length + " pool nodes healthy";
+  document.getElementById("sJobs").textContent = d.jobs.length;
+  document.getElementById("tunnel") && (document.getElementById("tunnel").textContent = d.tunnel_url);
 
-  const nBox = document.getElementById("nodes");
-  nBox.innerHTML = d.nodes.map(n => `<div class="row"><span>${n.node_id} <span class="muted">(${n.sets_held} sets)</span></span>
-    <span class="chip ${n.status==="active" && !stale(n.last_seen) ? "ok" : "bad"}">${n.status||"?"}</span></div>
-    <div class="row" style="font-size:11px"><span class="muted">${n.instance}</span><span class="muted">${ago(n.last_seen)}</span></div>`).join("") || '<div class="muted">no nodes</div>';
+  const problems = [];
+  for(const w of d.workflows){
+    const last = w.runs[0];
+    if(last && last.conclusion && last.conclusion !== "success") problems.push(WF_INFO[w.workflow] ? WF_INFO[w.workflow][0] : w.workflow);
+  }
+  const b = document.getElementById("banner");
+  if(problems.length){
+    b.className = "banner warn"; b.style.display = "block";
+    b.innerHTML = "Mostly healthy, but one worker needs attention: " + problems.join(", ") +
+      ".<small>Click “Run now” on it below, or check its logs in GitHub Actions.</small>";
+  } else {
+    b.className = "banner ok"; b.style.display = "block";
+    b.innerHTML = "All systems running ✔<small>Files, pool nodes, and all background workers are healthy.</small>";
+  }
 
-  const jBox = document.getElementById("jobs");
-  jBox.innerHTML = d.jobs.map(j => `<div class="row"><span>#${j.id} ${j.type}</span>
-    <span class="chip ${j.status==="queued"?"warn":j.status==="processing"?"ok":"bad"}">${j.status}</span></div>
-    <div class="row" style="font-size:11px"><span class="muted">target ${j.target||"-"} · attempts ${j.attempts}</span><span class="muted">${ago(j.updated_at)}</span></div>`).join("") || '<div class="muted">no jobs</div>';
+  renderWorkers(d);
+  renderFiles(d.files);
+  document.getElementById("raw").textContent = JSON.stringify(d, null, 2);
 
-  document.getElementById("sets").innerHTML =
-    `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px">` +
-    d.sets.map(x => `<div style="background:#0d141b;border:1px solid var(--line);border-radius:8px;padding:10px">
-      <div style="display:flex;justify-content:space-between"><b>${x.set_id}</b>
-      <span class="chip ${x.status==="held"?"ok":"warn"}">${x.status||"-"}</span></div>
-      <div class="st" style="margin-top:6px">${fmtBytes(x.size_bytes)}</div>
-      <div class="st">holder: ${x.holder||"idle"}</div>
-      <div class="st">anchor ${ago(x.last_anchor_at)}</div></div>`).join("") + "</div>";
+  document.getElementById("sets").innerHTML = d.sets.length ? d.sets.map(x =>
+    `<div class="row" style="font-size:13px"><span class="muted">${x.set_id}</span>
+     <span>${fmtBytes(x.size_bytes)}</span><span class="muted">holder: ${x.holder||"idle"}</span>
+     <span class="chip ${stale(x.last_anchor_at) ? "warn" : "ok"}">anchored ${ago(x.last_anchor_at)}</span></div>`
+  ).join("") : '<div class="muted">no sets yet</div>';
+}
 
-  const wfBox = document.getElementById("workflows");
+function renderWorkers(d){
   const key = localStorage.getItem(LS_KEY) || "";
-  const mk = (name) => `<button data-wf="${name}" onclick="dispatch('${name}')">Run</button>`;
-  wfBox.innerHTML = d.workflow_options.map(name => {
+  document.getElementById("workers").innerHTML = d.workflow_options.map(name => {
+    const [fname, fdesc] = WF_INFO[name] || [name, ""];
     const rec = d.workflows.find(w => w.workflow === name);
     const last = rec && rec.runs[0];
-    const chip = last ? (last.status==="in_progress" ? "ok" : (last.conclusion==="success"?"ok":last.conclusion?"bad":"warn")) : "warn";
-    return `<div class="wf"><b>${name}</b>${mk(name)}<span class="chip ${chip}">${last? (last.status==="in_progress"?"running":last.conclusion||"queued") : "never"}</span>
-      <span class="last">${last? ago(last.created_at) + " · #" + last.id : ""}</span></div>`;
+    let chip, label;
+    if(!last){ chip = "chip"; label = "never run"; }
+    else if(last.status === "in_progress"){ chip = "chip ok"; label = "running now"; }
+    else if(last.conclusion === "success"){ chip = "chip ok"; label = "ok"; }
+    else if(last.conclusion){ chip = "chip bad"; label = "issue"; }
+    else { chip = "chip warn"; label = "starting"; }
+    return `<div class="worker">
+      <div><div class="wname">${fname}</div><div class="wdesc">${fdesc}</div></div>
+      <span class="${chip}">${label}</span>
+      <span class="wlast">${last ? "last run " + ago(last.created_at) : ""}</span>
+      <button class="small" data-wf="${name}" ${key ? "" : "disabled"} onclick="dispatch('${name}')" title="${key ? "" : "Save the API key in Advanced settings to enable"}" >Run now</button>
+    </div>`;
   }).join("");
-  document.querySelectorAll("[data-wf]").forEach(b => b.hidden = !key);
-
-  const tbody = document.querySelector("#files tbody");
-  tbody.innerHTML = d.files.map(f => `<tr><td>${f.id}</td><td>${f.name}</td><td>${fmtBytes(f.size)}</td>
-    <td>${f.store}</td><td>${f.status}</td><td class="muted">${ago(f.created_at)}</td></tr>`).join("");
 }
 
-function stale(iso){ return Date.now() - new Date(iso).getTime() > 5*60*1000; }
+function renderFiles(files){
+  const q = (document.getElementById("search").value || "").toLowerCase();
+  const list = files.filter(f => f.name.toLowerCase().includes(q));
+  const box = document.getElementById("files");
+  if(!list.length){ box.innerHTML = '<div class="empty">No files yet — drop one in the upload box above.</div>'; return; }
+  box.innerHTML = list.map(f => {
+    const ready = f.status === "ready";
+    const sname = {git:"small", release:"medium", archive:"archive", pool:"big file"}[f.store] || f.store;
+    return `<div class="row">
+      <div style="min-width:0; flex:1"><div class="fname">${f.name}</div>
+        <div class="fmeta">${fmtBytes(f.size)} · ${sname} · added ${ago(f.created_at)}</div></div>
+      <span class="chip ${ready ? "ok" : "warn"}">${ready ? "ready" : f.status}</span>
+      <div class="acts">
+        <button class="small" ${ready && f.url ? "" : "disabled"} onclick="window.open('${f.url}','_blank')">Download</button>
+        <button class="small" ${ready && f.url ? "" : "disabled"} onclick="copyText('${f.url}')">Copy link</button>
+        <button class="small danger" onclick="delFile('${f.id}')">Delete</button>
+      </div>
+    </div>`;
+  }).join("");
+}
 
-function saveKey(){ const k = document.getElementById("apiKey").value.trim();
-  if(k) localStorage.setItem(LS_KEY, k);
-  else { localStorage.removeItem(LS_KEY); alert("Key cleared — Run buttons will hide."); }
-  refresh(true); }
+async function delFile(id){
+  if(!localStorage.getItem(LS_KEY)){ toast("Save your API key in Advanced settings to delete files.", 5000); return; }
+  if(!confirm("Delete this file permanently?")) return;
+  try {
+    const res = await fetch(base + "/v1/file/" + id, {method:"DELETE", headers: headers()});
+    if(!res.ok) throw new Error("HTTP " + res.status);
+    toast("File deleted ✔"); refresh();
+  } catch(e){ toast("Delete failed: " + e.message); }
+}
 
 async function dispatch(name){
-  if(!confirm("Dispatch workflow '" + name + "'?")) return;
-  const st = document.getElementById("status");
+  if(!localStorage.getItem(LS_KEY)){ toast("Save your API key in Advanced settings to run workers.", 5000); return; }
+  if(!confirm("Start “" + (WF_INFO[name] ? WF_INFO[name][0] : name) + "” now?")) return;
   try {
-    const res = await fetch(base + "/v1/dashboard/dispatch?workflow=" + encodeURIComponent(name),
-      {method:"POST", headers:{"X-API-Key": localStorage.getItem(LS_KEY)||""}});
+    const res = await fetch(base + "/v1/dashboard/dispatch?workflow=" + encodeURIComponent(name), {method:"POST", headers: headers()});
     if(!res.ok) throw new Error("HTTP " + res.status + " " + (await res.text()).slice(0,120));
-    st.textContent = "dispatched " + name; st.style.color = "var(--ok)";
-    setTimeout(()=>refresh(true), 2500);
-  } catch(e){ st.textContent = "dispatch failed: " + e.message; st.style.color = "var(--bad)"; }
+    toast("Started — it should appear as running within a minute.", 4000);
+    setTimeout(refresh, 2500);
+  } catch(e){ toast("Failed to start: " + e.message, 6000); }
 }
 
-// if a key is stored, expose a tiny prompt-less setter in console
-document.getElementById("apiBase").value = base || "";
+async function uploadFile(file){
+  const msg = document.getElementById("upMsg");
+  msg.textContent = "Uploading " + file.name + " (" + fmtBytes(file.size) + ")…";
+  const fd = new FormData(); fd.append("file", file);
+  try {
+    const res = await fetch(base + "/v1/upload", {method:"POST", headers: headers(), body: fd});
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || ("HTTP " + res.status));
+    msg.textContent = "";
+    toast("Uploaded ✔ <a href='" + (data.url || "#") + "'>" + data.name + "</a> — " + fmtBytes(data.size || file.size), 8000);
+    refresh();
+  } catch(e){
+    msg.textContent = "Upload failed: " + e.message;
+  }
+}
+
+function saveSettings(){
+  base = document.getElementById("apiBase").value.trim().replace(/\/+$/, "") || FIXED_BASE;
+  localStorage.setItem(LS_BASE, base);
+  const k = document.getElementById("apiKey").value.trim();
+  if(k) localStorage.setItem(LS_KEY, k);
+  refresh(); toast("Settings saved ✔", 2500);
+}
+
+// drag & drop + file picker
+const drop = document.getElementById("drop"), fi = document.getElementById("fileInput");
+drop.onclick = () => fi.click();
+fi.onchange = () => { if(fi.files[0]) uploadFile(fi.files[0]); fi.value = ""; };
+["dragenter","dragover"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave","drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", e => { const f = e.dataTransfer.files[0]; if(f) uploadFile(f); });
+
+document.getElementById("apiBase").value = base;
 if(localStorage.getItem(LS_KEY)) document.getElementById("apiKey").value = "••••••";
-setInterval(refresh, 30000);
+document.getElementById("search").addEventListener("input", () => lastData && renderFiles(lastData.files));
+
+setInterval(() => { refresh(); if(lastData) document.getElementById("updated").textContent = "updated " + ago(new Date().toISOString()); }, 30000);
 refresh();
 </script>
 </body>
