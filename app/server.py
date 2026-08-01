@@ -389,7 +389,7 @@ async def download(file_id: str):
     return RedirectResponse(url)
 
 
-def finalize_upload(name: str, mime: str, data_path: str, expires: datetime | None = None):
+def finalize_upload(name: str, mime: str, data_path: str, expires: datetime | None = None, fid: str | None = None):
     """Shared tail of upload: hash, dedupe, tier decision, record row.
 
     Works on a spool file so big uploads never sit fully in RAM.
@@ -411,7 +411,7 @@ def finalize_upload(name: str, mime: str, data_path: str, expires: datetime | No
         return {"id": row[0], "url": row[1], "size": row[2], "mime": row[3], "deduped": True,
                 "expires_at": row[5].isoformat() if row[5] else None}
 
-    fid = uuid.uuid4().hex[:12]
+    fid = fid or uuid.uuid4().hex[:12]
     now = datetime.now(timezone.utc)
     rel = f"files/{now.strftime('%Y/%m')}/{digest[:2]}/{fid}-{name}"
     set_id = f"set-{int(digest[:2], 16) % SET_COUNT:02d}"
@@ -612,7 +612,7 @@ async def upload_complete(fid: str, background: BackgroundTasks, x_api_key: str 
         meta = json.load(fh)
     if os.path.getsize(path) != meta["total_size"]:
         raise HTTPException(400, f"incomplete upload: {os.path.getsize(path)}/{meta['total_size']}")
-    background.add_task(finalize_upload, meta["name"], meta["mime"], path)
+    background.add_task(finalize_upload, meta["name"], meta["mime"], path, None, fid)
     return {"id": fid, "status": "processing", "note": "finalizing in background; poll /v1/file/{id}"}
 
 
