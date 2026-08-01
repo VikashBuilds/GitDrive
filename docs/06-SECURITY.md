@@ -7,7 +7,14 @@
 | `POST /v1/upload` (+ chunked & archive endpoints) | `X-API-Key` header; **any** valid key |
 | `DELETE /v1/file/{id}`, `POST /v1/dashboard/dispatch` | `X-API-Key` header; **admin** keys only |
 | `GET /v1/download/{id}` (private file) | `X-API-Key` header; otherwise 401 |
-| `GET /v1/file/{id}`, `/v1/files`, `/v1/stats`, `/v1/health`, public downloads | Public (links are meant to be shareable) |
+| `GET /v1/file/{id}`, `/v1/files`, `/v1/stats`, `/v1/dashboard` | `X-API-Key` header; **admin** keys only |
+| `GET /v1/health`, public `GET /v1/download/{id}` | Public |
+
+The dashboard (GitHub Pages) is **locked behind a gate**: you must enter your
+API key (and optionally your master password) before any file list, metadata,
+upload or delete is possible. The key lives only in your browser's
+localStorage — anyone hitting `gitdrive.vikashbuilds.in` sees nothing but the
+gate.
 
 **Key scopes** — keys in the `GITDRIVE_API_KEYS` secret may carry a scope suffix
 (`key:scope`). Clients send just the key name (no suffix):
@@ -20,6 +27,31 @@
 - Keys are stored in GitHub Secrets only — never in code or repos
 - Rotate by editing the secret; multiple comma-separated keys allowed (one per app/bot)
 - `GITDRIVE_DB_URL`, `GH_PAT`, `RELAY_TOKEN` never leave the runner env
+
+## 🔐 End-to-End Encryption
+
+Uploads with `enc=true` are encrypted **in the browser** before a single byte
+reaches the server. The server and GitHub only ever see ciphertext.
+
+- **Master key** — PBKDF2-SHA256 (200k iterations) from your master password;
+  the salt is stored in localStorage (`gd_enc_salt`) so the same password
+  always derives the same key. The key itself never leaves the tab.
+- **Per-file key** — HKDF-SHA256(`gitdrive:e2e:<fileId>`) from the master key,
+  so each file gets a unique AES-256-GCM key and the id can live in the URL.
+- **Format** — each file is a `GDENC1` header (magic + 1 MiB chunk size)
+  followed by independent 1 MiB AES-256-GCM chunks with a 12-byte IV
+  (counter at bytes 8-11). Chunks are independent → chunked uploads and
+  streamed downloads decrypt correctly.
+- **Round-trip verified end-to-end** against the live API (encrypt → upload →
+  download → decrypt → byte-identical; wrong password → rejected).
+- **What it protects:** GitHub admins, the runner operator, anyone with a
+  public/copied URL — nobody can read the content without your password.
+- **What it does NOT protect:** the metadata (name, size, date) is plaintext;
+  the file id must be kept (the key derives from it); passwords must be strong
+  (PBKDF2 makes brute force ~200k× slower, but a weak password stays weak).
+- On the dashboard: unlock with password → new uploads are encrypted and show
+  a 🔒; downloading an encrypted file requires unlocking first; the lock pill
+  wipes the key from the tab.
 
 ## 🔒 Private Files
 
@@ -53,6 +85,8 @@ Uploads with `private=true` are stored in `PRIVATE_STORAGE_REPOS`
 | Disk filling (git) | 25 MB git threshold, 2 GB hard cap; monthly storage report in prune log |
 | Malicious file types | Mime allowlist — `.exe/.sh/.bat/.html/.svg/.js` blocked by default (XSS + malware vectors), configurable |
 | Secret files uploaded by mistake | Use the private upload option; dashboard default remains public |
+| Full visibility of the dashboard URL | Gate + API key required for every metadata call (see above) |
+| Anyone with a share link reading content | Public links are the point; use `enc=true` + password or `private=true` for real secrecy |
 | Key in URL/logs | Headers only; server never logs the key or file bytes |
 
 ## 🗄️ Database Backup
