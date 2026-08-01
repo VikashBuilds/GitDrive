@@ -2,10 +2,10 @@
 
 Base URL: `https://drive.vikashbuilds.in` (Cloudflare tunnel → the 24/7 runner)
 
-Auth: `X-API-Key: <key>` header on **all** endpoints except `/v1/health` and
-`GET /v1/download/{id}` for **public** files. Metadata (`/v1/files`, `/v1/file/{id}`,
-`/v1/stats`, `/v1/dashboard`), uploads, deletes and dispatches all require a key —
-the dashboard gate enforces this client-side too.
+Auth: `X-API-Key: <key>` header on **every** endpoint — downloads included.
+Only `/v1/health` is public. Metadata (`/v1/files`, `/v1/file/{id}`,
+`/v1/stats`, `/v1/dashboard`), uploads, downloads and deletes all require a
+key — the dashboard gate enforces this client-side too.
 
 Keys can be scoped in the secret config (`key:scope`); the client always sends
 just the key name — `key:upload` → send `key` (upload-only), plain keys are
@@ -131,21 +131,22 @@ Liveness probe: `{ "ok": true, "uptime_s": 12345 }` — used by GridLive/uptime 
 
 ## `GET /v1/download/{id}`
 
-Stream any file as one continuous download (public files need no key):
+Stream any file as one continuous download — **requires `X-API-Key` for every
+file** (any valid key):
 
 - public git/release files → 302 redirect to the CDN URL
 - **buffered pool files (not yet pushed to GitHub) → streamed directly from the durable release parts on the runner**, correct `Content-Length`, attachment filename — downloads work even while a file is still "buffered"
 - **archive files → server concatenates all release parts on the fly** (correct `Content-Length`, attachment filename)
-- **private files → proxied through authenticated GitHub API** (send `X-API-Key`); the private GitHub URL is never exposed
+- **private files → proxied through authenticated GitHub API**; the private GitHub URL is never exposed
 - **`enc` files → always proxied through the API** so the browser can decrypt the stream client-side
 
 ```
-curl -O https://drive.vikashbuilds.in/v1/download/abc123
+curl -O https://drive.vikashbuilds.in/v1/download/abc123 -H "X-API-Key: $KEY"
 ```
 
 | Code | When |
 |---|---|
-| 401 | private file without a valid `X-API-Key` |
+| 401 | no/invalid `X-API-Key` (any file) |
 | 404 | private release/parts missing |
 
 ---

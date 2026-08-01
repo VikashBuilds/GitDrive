@@ -100,8 +100,8 @@ def main():
     check("dedupe", r2 is not None and r2.status_code == 200 and r2.json()["id"] == up["id"],
           f"id={up['id']}")
 
-    # 3. download + integrity
-    r3 = call(c, "get", f"{args.api}/v1/download/{up['id']}")
+    # 3. download + integrity (downloads require the API key)
+    r3 = call(c, "get", f"{args.api}/v1/download/{up['id']}", headers=headers)
     check("download git", r3 is not None and r3.status_code in (200, 301, 302, 307, 308),
           f"-> {r3.status_code if r3 else 'no response'}")
     if r3.status_code == 200:
@@ -137,14 +137,14 @@ def main():
     except Exception:
         detail = f"status={r.status_code if r else None} body={(r.text[:120] if r else '')!r}"
     check("archive complete", r is not None and r.status_code == 200, detail)
-    r = call(c, "get", f"{args.api}/v1/download/{fid}")
+    r = call(c, "get", f"{args.api}/v1/download/{fid}", headers=headers)
     check("archive download", r is not None and r.status_code == 200 and len(r.content) == total,
           f"-> {r.status_code if r else 'no response'} {len(r.content) if r else 0}/{total}b")
     if r is not None and r.status_code == 200:
         check("archive sha", hashlib.sha256(r.content).hexdigest() == hashlib.sha256(big).hexdigest())
 
     # 5. pool awareness (report, not fail — depends on live carousel)
-    r = call(c, "get", f"{args.api}/v1/stats")
+    r = call(c, "get", f"{args.api}/v1/stats", headers=headers)
     stats = r.json() if r is not None and r.status_code == 200 else {}
     check("stats", r is not None and r.status_code == 200,
           f"files={stats.get('files')} bytes={stats.get('bytes_total')}")

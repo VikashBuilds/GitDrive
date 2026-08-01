@@ -456,8 +456,10 @@ def _download_private(store: str, name: str, repo: str, tag: str, path: str,
 async def download(file_id: str, x_api_key: str = Header("")):
     """Stream any file. Archives are concatenated from their release parts.
 
-    Private files are proxied through authenticated GitHub API endpoints so
-    the underlying storage URL is never exposed — and require a valid API key.
+    Downloads require a valid API key for every file (public included) —
+    the dashboard sends it; without it there is no data access at all.
+    Private files are additionally proxied through authenticated GitHub API
+    endpoints so the underlying storage URL is never exposed.
     """
     conn = db()
     cur = conn.cursor()
@@ -472,8 +474,8 @@ async def download(file_id: str, x_api_key: str = Header("")):
     if not row:
         raise HTTPException(404, "not found")
     store, url, name, parts_json, status, repo, path, size, tag, private, enc = row
-    if private and x_api_key not in _API_KEY_PLAIN:
-        raise HTTPException(401, "private file — X-API-Key required")
+    if x_api_key not in _API_KEY_PLAIN:
+        raise HTTPException(401, "invalid api key")
     conn = db()
     cur = conn.cursor()
     cur.execute("UPDATE files SET download_count = download_count + 1 WHERE id = %s", (file_id,))

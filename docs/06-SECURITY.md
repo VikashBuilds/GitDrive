@@ -6,9 +6,9 @@
 |---|---|
 | `POST /v1/upload` (+ chunked & archive endpoints) | `X-API-Key` header; **any** valid key |
 | `DELETE /v1/file/{id}`, `POST /v1/dashboard/dispatch` | `X-API-Key` header; **admin** keys only |
-| `GET /v1/download/{id}` (private file) | `X-API-Key` header; otherwise 401 |
+| `GET /v1/download/{id}` (any file) | `X-API-Key` header; **any valid key** |
 | `GET /v1/file/{id}`, `/v1/files`, `/v1/stats`, `/v1/dashboard` | `X-API-Key` header; **admin** keys only |
-| `GET /v1/health`, public `GET /v1/download/{id}` | Public |
+| `GET /v1/health` | Public |
 
 The dashboard (GitHub Pages) is **locked behind a gate**: you must enter your
 API key (and optionally your master password) before any file list, metadata,

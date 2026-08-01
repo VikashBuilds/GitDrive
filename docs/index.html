@@ -398,9 +398,6 @@ async function downloadFile(id){
   const f = fileById(id);
   if(!f) return;
   if(f.enc && !encMaster){ toast("This file is encrypted — unlock with your master password to download it.", 6000); return; }
-  if(f.private && !localStorage.getItem(LS_KEY)){ toast("Save your API key to download private files.", 5000); return; }
-  const fast = !f.enc && !f.private && f.url && f.status === "ready" && f.store !== "pool";
-  if(fast){ window.open(f.url, "_blank"); return; }
   try {
     const res = await fetch(base + "/v1/download/" + id, {headers: headers()});
     if(!res.ok) throw new Error("HTTP " + res.status + (res.status === 401 ? " (bad API key?)" : ""));
