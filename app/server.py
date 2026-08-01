@@ -436,45 +436,56 @@ def finalize_upload(name: str, mime: str, data_path: str, expires: datetime | No
         # Big file (2-12 GB): only the relay pool can hold it. Buffer it
         # durably as release-asset parts (survives runner rotation), then a
         # carousel node drains the parts into its set whenever it boots.
+        # Parts are staged to disk and pushed with curl -T: uploads.github.com
+        # rejects chunked/streamed bodies (needs a real Content-Length).
         tag = "pool-" + fid
-        # Idempotent part upload: skip parts already on the release (a
-        # previous attempt may have died mid-way).
         release_id = ensure_release(tag, repo)
         r = _gh.get(f"https://api.github.com/repos/{repo}/releases/tags/{tag}", headers=GH)
         existing = {}
         if r.status_code == 200:
             existing = {a["name"]: a["browser_download_url"] for a in r.json().get("assets", [])}
         parts = []
-        with open(data_path, "rb") as fh:
-            idx = 0
-            while True:
-                base = idx * POOL_PART_MAX
-                if base >= size:
-                    break
-                end = min(base + POOL_PART_MAX, size)
-                part_name = f"{name}.p{idx:03d}"
-                if part_name in existing:
-                    part_url = existing[part_name]
-                else:
-                    def part_gen(fh=fh, start=base, stop=end):
-                        fh.seek(start)
-                        remaining = stop - start
-                        while remaining > 0:
-                            chunk = fh.read(min(1 << 20, remaining))
-                            if not chunk:
-                                break
-                            remaining -= len(chunk)
-                            yield chunk
-
-                    rr = _gh.post(
-                        f"https://uploads.github.com/repos/{repo}/releases/{release_id}/assets?name={quote(part_name)}",
-                        headers={**GH, "Content-Type": mime or "application/octet-stream"},
-                        content=part_gen(),
-                    )
-                    rr.raise_for_status()
-                    part_url = rr.json()["browser_download_url"]
-                parts.append({"url": part_url, "size": end - base})
-                idx += 1
+        part_tmp = os.path.join(BUFFER_DIR, f"{fid}.part")
+        try:
+            with open(data_path, "rb") as fh:
+                idx = 0
+                while True:
+                    base = idx * POOL_PART_MAX
+                    if base >= size:
+                        break
+                    end = min(base + POOL_PART_MAX, size)
+                    part_name = f"{name}.p{idx:03d}"
+                    if part_name in existing:
+                        part_url = existing[part_name]
+                    else:
+                        fh.seek(base)
+                        with open(part_tmp, "wb") as pf:
+                            remaining = end - base
+                            while remaining > 0:
+                                chunk = fh.read(min(1 << 20, remaining))
+                                if not chunk:
+                                    break
+                                remaining -= len(chunk)
+                                pf.write(chunk)
+                        up = subprocess.run(
+                            ["curl", "-sS", "-X", "POST",
+                             "-H", f"Authorization: Bearer {GH_TOKEN}",
+                             "-H", "Accept: application/vnd.github+json",
+                             "-H", "X-GitHub-Api-Version: 2022-11-28",
+                             "-H", "Content-Type: application/octet-stream",
+                             "-T", part_tmp,
+                             f"https://uploads.github.com/repos/{repo}/releases/{release_id}/assets?name={quote(part_name)}"],
+                            capture_output=True, text=True, timeout=1800,
+                        )
+                        if up.returncode != 0 or "browser_download_url" not in up.stdout:
+                            raise RuntimeError(f"part upload failed ({up.returncode}): {up.stderr[-300:] or up.stdout[-300:]}")
+                        part_url = json.loads(up.stdout)["browser_download_url"]
+                        os.remove(part_tmp)
+                    parts.append({"url": part_url, "size": end - base})
+                    idx += 1
+        finally:
+            if os.path.exists(part_tmp):
+                os.remove(part_tmp)
         parts_json = json.dumps(parts)
         os.remove(data_path)
         url = ""
