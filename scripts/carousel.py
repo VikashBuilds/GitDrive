@@ -391,8 +391,6 @@ def drain_buffer_jobs():
                 conn.close()
                 continue
             name, set_id, size, parts_json = frow
-            dst = DATA / set_id
-            dst.mkdir(parents=True, exist_ok=True)
             tmp = Path(f"/tmp/drain-{fid}")
             got = 0
             if parts_json:
@@ -423,10 +421,41 @@ def drain_buffer_jobs():
                             got += len(chunk)
             if got != size:
                 raise RuntimeError(f"size mismatch: got {got} expected {size}")
-            with open(tmp, "rb") as fh, open(dst / name, "wb") as out:
-                shutil.copyfileobj(fh, out)
-            tmp.unlink(missing_ok=True)
-            url = f"{TUNNEL_URL}/v1/set/{set_id}/{quote(name)}"
+            holder_url = None
+            conn = db()
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT holder_url FROM sets WHERE set_id = %s AND holder_url IS NOT NULL "
+                "AND holder_url <> ''",
+                (set_id,),
+            )
+            row = cur.fetchone()
+            cur.close()
+            conn.close()
+            if row and row[0]:
+                try:
+                    with open(tmp, "rb") as fh:
+                        r = client.put(
+                            f"{row[0]}/v1/relay/recv/{quote(set_id)}/{quote(name)}",
+                            headers={"X-Relay-Token": RELAY_TOKEN},
+                            content=fh,
+                        )
+                    if r.status_code == 200 and r.json().get("size") == got:
+                        holder_url = row[0]
+                        print(f"[relay] drained {name} ({got / (1024**3):.1f} GB) "
+                              f"straight to holder of {set_id}")
+                except Exception as e:
+                    print(f"[relay] holder transfer failed ({e}) — writing locally")
+            if holder_url:
+                url = f"{holder_url}/v1/set/{set_id}/{quote(name)}"
+                tmp.unlink(missing_ok=True)
+            else:
+                dst = DATA / set_id
+                dst.mkdir(parents=True, exist_ok=True)
+                with open(tmp, "rb") as fh, open(dst / name, "wb") as out:
+                    shutil.copyfileobj(fh, out)
+                tmp.unlink(missing_ok=True)
+                url = f"{TUNNEL_URL}/v1/set/{set_id}/{quote(name)}"
             conn = db()
             conn.autocommit = True
             cur = conn.cursor()

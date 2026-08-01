@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GitDrive Control Grid</title>
+<style>
+  :root { --bg:#0b0f14; --panel:#131a22; --line:#1f2a35; --txt:#dbe4ee; --dim:#7d8fa0; --ok:#34d399; --warn:#fbbf24; --bad:#f87171; --acc:#38bdf8; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--txt); font:14px/1.45 ui-monospace,Consolas,monospace; padding:20px; }
+  header { display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin-bottom:18px; }
+  h1 { font-size:18px; letter-spacing:.5px; }
+  h1 .dot { color:var(--ok); }
+  .bar { margin-left:auto; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  input { background:#0d141b; border:1px solid var(--line); color:var(--txt); padding:6px 8px; border-radius:6px; font:inherit; width:340px; }
+  button { background:var(--panel); border:1px solid var(--line); color:var(--txt); padding:6px 12px; border-radius:6px; cursor:pointer; font:inherit; }
+  button:hover { border-color:var(--acc); }
+  .st { font-size:12px; color:var(--dim); }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(250px,1fr)); gap:14px; margin-bottom:14px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; }
+  .card h2 { font-size:12px; text-transform:uppercase; letter-spacing:1px; color:var(--dim); margin-bottom:10px; }
+  .big { font-size:26px; font-weight:700; }
+  .row { display:flex; justify-content:space-between; padding:3px 0; border-bottom:1px dashed var(--line); }
+  .row:last-child { border-bottom:none; }
+  .chip { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; }
+  .ok { background:#0c3a2c; color:var(--ok); } .warn { background:#3a2f0c; color:var(--warn); } .bad { background:#3a1212; color:var(--bad); }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  th,td { text-align:left; padding:5px 8px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th { color:var(--dim); font-weight:600; }
+  td a { color:var(--acc); text-decoration:none; }
+  .muted { color:var(--dim); }
+  .sec { margin-top:16px; }
+  .wf { display:flex; align-items:center; gap:10px; padding:7px 0; border-bottom:1px dashed var(--line); flex-wrap:wrap; }
+  .wf b { min-width:150px; }
+  .wf .btns { margin-left:auto; display:flex; gap:6px; }
+  .last { font-size:12px; color:var(--dim); margin-left:auto; }
+  .err { color:var(--bad); font-size:12px; margin-top:6px; }
+  @media (max-width:700px){ input{ width:100%; } .bar{ margin-left:0; width:100%; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>GitDrive <span class="dot">●</span> Control Grid</h1>
+  <div class="bar">
+    <input id="apiBase" placeholder="API base URL (e.g. https://xxx.trycloudflare.com)">
+    <button onclick="saveBase()">Save</button>
+    <input id="apiKey" type="password" placeholder="API key (for Run buttons)" style="width:230px">
+    <button onclick="saveKey()">Save key</button>
+    <button onclick="refresh(true)">Refresh</button>
+    <span class="st" id="status">idle</span>
+  </div>
+</header>
+
+<div class="grid">
+  <div class="card"><h2>Storage</h2><div class="big" id="sFiles">–</div><div class="st" id="sBytes"></div>
+    <div class="row" style="margin-top:8px"><span>deleted</span><span id="sDel">–</span></div>
+    <div class="row"><span>repos</span><span id="sRepos">–</span></div>
+    <div class="row"><span>server uptime</span><span id="sUp">–</span></div>
+  </div>
+  <div class="card"><h2>Nodes</h2><div id="nodes" style="max-height:260px;overflow:auto"></div></div>
+  <div class="card"><h2>Tunnel</h2><div class="st" id="tunnel">–</div><div style="margin-top:8px;font-size:12px">All storage is served through this rotating tunnel; files page is for management only.</div></div>
+  <div class="card"><h2>Jobs</h2><div id="jobs" style="max-height:260px;overflow:auto"></div></div>
+</div>
+
+<div class="card sec"><h2>Sets (20)</h2><div id="sets"></div></div>
+
+<div class="card sec"><h2>Workflow control</h2><div id="workflows"></div></div>
+
+<div class="card sec"><h2>Recent files</h2><div style="overflow:auto"><table id="files"><thead>
+  <tr><th>id</th><th>name</th><th>size</th><th>store</th><th>status</th><th>created</th></tr></thead><tbody></tbody>
+</table></div></div>
+
+<script>
+const LS_BASE = "gd_api_base", LS_KEY = "gd_api_key";
+let base = localStorage.getItem(LS_BASE) || "";
+let lastTunnels = JSON.parse(localStorage.getItem("gd_tunnels") || "[]");
+
+function saveBase(){ base = document.getElementById("apiBase").value.trim().replace(/\/+$/,"");
+  localStorage.setItem(LS_BASE, base); remember(base); refresh(true); }
+function remember(u){ if(u && !lastTunnels.includes(u)){ lastTunnels.unshift(u); lastTunnels = lastTunnels.slice(0,5); localStorage.setItem("gd_tunnels", JSON.stringify(lastTunnels)); } }
+
+async function tryFetch(url, opts){
+  const res = await fetch(url, opts);
+  if(!res.ok) throw new Error("HTTP " + res.status);
+  return res.json();
+}
+async function fetchDash(baseUrl){
+  return await tryFetch(baseUrl + "/v1/dashboard", {headers:{"X-API-Key": localStorage.getItem(LS_KEY)||""}});
+}
+
+let failed = false;
+async function refresh(manual){
+  const st = document.getElementById("status");
+  const candidates = [];
+  if(base) candidates.push(base);
+  for(const u of lastTunnels) if(u !== base) candidates.push(u);
+  candidates.push(""); // placeholder: no base configured yet
+  for(const u of candidates){
+    try {
+      if(!u) throw new Error("no base configured");
+      const d = await fetchDash(u);
+      remember(d.tunnel_url);
+      if(!base || d.tunnel_url) base = u; // stay on the working one
+      render(d); failed = false;
+      st.textContent = "live @ " + u.replace(/^https:\/\//,"").slice(0,40);
+      st.style.color = "var(--ok)";
+      return;
+    } catch(e){ /* try next */ }
+  }
+  failed = true;
+  st.textContent = "offline — no reachable API; set the base URL above";
+  st.style.color = "var(--bad)";
+}
+function fmtBytes(n){ if(n == null) return "–"; if(n >= 1e9) return (n/1e9).toFixed(2)+" GB"; if(n >= 1e6) return (n/1e6).toFixed(1)+" MB"; if(n >= 1e3) return (n/1e3).toFixed(0)+" KB"; return n+" B"; }
+function ago(iso){ if(!iso) return "–"; const s = (Date.now() - new Date(iso).getTime())/1000;
+  if(s < 90) return Math.round(s)+"s ago"; if(s < 5400) return Math.round(s/60)+"m ago"; return Math.round(s/3600)+"h ago"; }
+
+function render(d){
+  const s = d.stats;
+  document.getElementById("sFiles").textContent = s.files;
+  document.getElementById("sBytes").textContent = fmtBytes(s.bytes_total);
+  document.getElementById("sDel").textContent = s.deleted;
+  document.getElementById("sRepos").textContent = s.repos.map(r=>r.split("/")[1]).join(", ");
+  document.getElementById("sUp").textContent = Math.round(d.server_uptime_s/3600)+"h";
+  document.getElementById("tunnel").textContent = d.tunnel_url || "–";
+
+  const nBox = document.getElementById("nodes");
+  nBox.innerHTML = d.nodes.map(n => `<div class="row"><span>${n.node_id} <span class="muted">(${n.sets_held} sets)</span></span>
+    <span class="chip ${n.status==="active" && !stale(n.last_seen) ? "ok" : "bad"}">${n.status||"?"}</span></div>
+    <div class="row" style="font-size:11px"><span class="muted">${n.instance}</span><span class="muted">${ago(n.last_seen)}</span></div>`).join("") || '<div class="muted">no nodes</div>';
+
+  const jBox = document.getElementById("jobs");
+  jBox.innerHTML = d.jobs.map(j => `<div class="row"><span>#${j.id} ${j.type}</span>
+    <span class="chip ${j.status==="queued"?"warn":j.status==="processing"?"ok":"bad"}">${j.status}</span></div>
+    <div class="row" style="font-size:11px"><span class="muted">target ${j.target||"-"} · attempts ${j.attempts}</span><span class="muted">${ago(j.updated_at)}</span></div>`).join("") || '<div class="muted">no jobs</div>';
+
+  document.getElementById("sets").innerHTML =
+    `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px">` +
+    d.sets.map(x => `<div style="background:#0d141b;border:1px solid var(--line);border-radius:8px;padding:10px">
+      <div style="display:flex;justify-content:space-between"><b>${x.set_id}</b>
+      <span class="chip ${x.status==="held"?"ok":"warn"}">${x.status||"-"}</span></div>
+      <div class="st" style="margin-top:6px">${fmtBytes(x.size_bytes)}</div>
+      <div class="st">holder: ${x.holder||"idle"}</div>
+      <div class="st">anchor ${ago(x.last_anchor_at)}</div></div>`).join("") + "</div>";
+
+  const wfBox = document.getElementById("workflows");
+  const key = localStorage.getItem(LS_KEY) || "";
+  const mk = (name) => `<button data-wf="${name}" onclick="dispatch('${name}')">Run</button>`;
+  wfBox.innerHTML = d.workflow_options.map(name => {
+    const rec = d.workflows.find(w => w.workflow === name);
+    const last = rec && rec.runs[0];
+    const chip = last ? (last.status==="in_progress" ? "ok" : (last.conclusion==="success"?"ok":last.conclusion?"bad":"warn")) : "warn";
+    return `<div class="wf"><b>${name}</b>${mk(name)}<span class="chip ${chip}">${last? (last.status==="in_progress"?"running":last.conclusion||"queued") : "never"}</span>
+      <span class="last">${last? ago(last.created_at) + " · #" + last.id : ""}</span></div>`;
+  }).join("");
+  document.querySelectorAll("[data-wf]").forEach(b => b.hidden = !key);
+
+  const tbody = document.querySelector("#files tbody");
+  tbody.innerHTML = d.files.map(f => `<tr><td>${f.id}</td><td>${f.name}</td><td>${fmtBytes(f.size)}</td>
+    <td>${f.store}</td><td>${f.status}</td><td class="muted">${ago(f.created_at)}</td></tr>`).join("");
+}
+
+function stale(iso){ return Date.now() - new Date(iso).getTime() > 5*60*1000; }
+
+function saveKey(){ const k = document.getElementById("apiKey").value.trim();
+  if(k) localStorage.setItem(LS_KEY, k);
+  else { localStorage.removeItem(LS_KEY); alert("Key cleared — Run buttons will hide."); }
+  refresh(true); }
+
+async function dispatch(name){
+  if(!confirm("Dispatch workflow '" + name + "'?")) return;
+  const st = document.getElementById("status");
+  try {
+    const res = await fetch(base + "/v1/dashboard/dispatch?workflow=" + encodeURIComponent(name),
+      {method:"POST", headers:{"X-API-Key": localStorage.getItem(LS_KEY)||""}});
+    if(!res.ok) throw new Error("HTTP " + res.status + " " + (await res.text()).slice(0,120));
+    st.textContent = "dispatched " + name; st.style.color = "var(--ok)";
+    setTimeout(()=>refresh(true), 2500);
+  } catch(e){ st.textContent = "dispatch failed: " + e.message; st.style.color = "var(--bad)"; }
+}
+
+// if a key is stored, expose a tiny prompt-less setter in console
+document.getElementById("apiBase").value = base || "";
+if(localStorage.getItem(LS_KEY)) document.getElementById("apiKey").value = "••••••";
+setInterval(refresh, 30000);
+refresh();
+</script>
+</body>
+</html>

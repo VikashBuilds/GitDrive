@@ -14,6 +14,7 @@ import httpx
 import psycopg2
 import uvicorn
 from fastapi import BackgroundTasks, FastAPI, File, Header, HTTPException, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 
 DB_URL = os.environ["DB_URL"]
@@ -26,6 +27,7 @@ POOL_PART_MAX = int(1.8 * 1024 * 1024 * 1024)  # durable pool buffer part size
 POOL_MAX_GB = int(os.environ.get("POOL_MAX_GB", "12"))
 POOL_MAX = POOL_MAX_GB * 1024 * 1024 * 1024    # max file that fits a 14 GB pool node
 RELAY_TOKEN = os.environ.get("RELAY_TOKEN", "")
+DASHBOARD_REPO = os.environ.get("DASHBOARD_REPO", "VikashBuilds/GitDrive")
 BUFFER_DIR = "/tmp/gitdrive-buffer"
 RATE_LIMIT = int(os.environ.get("RATE_LIMIT_PER_HOUR", "60"))
 SET_COUNT = int(os.environ.get("SET_COUNT", "20"))
@@ -41,6 +43,13 @@ BLOCKED_EXT = {".exe", ".sh", ".bat", ".cmd", ".htm", ".html", ".svg", ".js", ".
 BLOCKED_MIME = {"text/html", "application/x-msdownload", "application/x-sh"}
 
 app = FastAPI(title="GitDrive API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.exception_handler(Exception)
@@ -698,6 +707,118 @@ def stats():
     conn.close()
     return {"files": count, "bytes_total": total, "bytes_git": git_bytes,
             "bytes_release": total - git_bytes, "top_files": top, "repos": STORAGE_REPOS}
+
+
+WORKFLOW_FILES = {
+    "upload-service": "upload-service.yml",
+    "verify": "verify-cycle.yml",
+    "telegram": "telegram-bot.yml",
+    "carousel": "carousel-node.yml",
+    "prune": "prune.yml",
+    "compress": "compress-workers.yml",
+    "cache-backup": "cache-backup.yml",
+    "supervisor": "carousel-supervisor.yml",
+}
+_workflows_cache = {"t": 0.0, "data": []}
+
+
+@app.get("/v1/dashboard")
+def dashboard():
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("SELECT count(*), coalesce(sum(size), 0) FROM files WHERE status <> 'deleted'")
+    fcount, fbytes = cur.fetchone()
+    cur.execute("SELECT count(*) FROM files WHERE status = 'deleted'")
+    deleted = cur.fetchone()[0]
+    cur.execute(
+        "SELECT id, name, size, store, status, url, created_at FROM files "
+        "WHERE status <> 'deleted' ORDER BY created_at DESC LIMIT 20"
+    )
+    files = [
+        {"id": r[0], "name": r[1], "size": r[2], "store": r[3], "status": r[4],
+         "url": r[5], "created_at": r[6].isoformat() if r[6] else None}
+        for r in cur.fetchall()
+    ]
+    cur.execute("SELECT id, type, status, attempts, target_id, updated_at FROM jobs ORDER BY id DESC LIMIT 15")
+    jobs = [
+        {"id": r[0], "type": r[1], "status": r[2], "attempts": r[3], "target": r[4],
+         "updated_at": r[5].isoformat() if r[5] else None}
+        for r in cur.fetchall()
+    ]
+    cur.execute("SELECT node_id, instance, tunnel_url, last_seen, sets_held, status FROM nodes ORDER BY last_seen DESC")
+    nodes = [
+        {"node_id": r[0], "instance": r[1], "tunnel_url": r[2],
+         "last_seen": r[3].isoformat() if r[3] else None, "sets_held": r[4], "status": r[5]}
+        for r in cur.fetchall()
+    ]
+    cur.execute("SELECT set_id, holder, holder_url, size_bytes, status, last_anchor_at FROM sets ORDER BY set_id")
+    sets = [
+        {"set_id": r[0], "holder": r[1], "holder_url": r[2], "size_bytes": r[3], "status": r[4],
+         "last_anchor_at": r[5].isoformat() if r[5] else None}
+        for r in cur.fetchall()
+    ]
+    cur.execute("SELECT v FROM meta WHERE k = 'tunnel_url'")
+    row = cur.fetchone()
+    tunnel = (row[0] or "").strip() if row else ""
+    cur.close()
+    conn.close()
+
+    if time.time() - _workflows_cache["t"] > 30:
+        try:
+            r = _gh.get(
+                f"https://api.github.com/repos/{DASHBOARD_REPO}/actions/runs",
+                headers=GH,
+                params={"per_page": 30},
+            )
+            runs = r.json().get("workflow_runs", []) if r.status_code == 200 else []
+            by_wf = {}
+            for run in runs:
+                by_wf.setdefault(run.get("name", "?"), []).append({
+                    "id": run["id"],
+                    "status": run["status"],
+                    "conclusion": run.get("conclusion"),
+                    "created_at": run["created_at"],
+                })
+            _workflows_cache["data"] = [
+                {"workflow": k, "runs": v[:5]} for k, v in sorted(by_wf.items())
+            ]
+            _workflows_cache["t"] = time.time()
+        except Exception:
+            pass
+
+    return {
+        "stats": {"files": fcount, "bytes_total": fbytes, "deleted": deleted,
+                  "repos": STORAGE_REPOS},
+        "tunnel_url": tunnel,
+        "nodes": nodes,
+        "sets": sets,
+        "jobs": jobs,
+        "files": files,
+        "workflows": _workflows_cache["data"],
+        "workflow_options": sorted(WORKFLOW_FILES),
+        "server_uptime_s": int(time.time() - start_time),
+    }
+
+
+@app.post("/v1/dashboard/dispatch")
+def dispatch_workflow(workflow: str, node_id: str = "", run_minutes: str = "",
+                      x_api_key: str = Header("")):
+    check_key(x_api_key)
+    wf_file = WORKFLOW_FILES.get(workflow)
+    if not wf_file:
+        raise HTTPException(400, f"unknown workflow; choose from {sorted(WORKFLOW_FILES)}")
+    payload = {"ref": "main"}
+    if workflow == "carousel":
+        payload["inputs"] = {"node_id": node_id or "carousel-04",
+                             "run_minutes": run_minutes or "30"}
+    r = _gh.post(
+        f"https://api.github.com/repos/{DASHBOARD_REPO}/actions/workflows/{wf_file}/dispatches",
+        headers=GH,
+        json=payload,
+    )
+    if r.status_code not in (201, 204):
+        raise HTTPException(r.status_code, r.text[:200])
+    return {"dispatched": workflow, "file": wf_file}
 
 
 start_time = time.time()
