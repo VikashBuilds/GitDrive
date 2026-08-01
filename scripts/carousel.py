@@ -22,6 +22,7 @@ Concurrency cost: 1 job normally, 2 during the ~20 min overlap.
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -59,7 +60,7 @@ GH = {
     "X-GitHub-Api-Version": "2022-11-28",
 }
 
-client = httpx.Client(timeout=httpx.Timeout(600.0, connect=30.0))
+client = httpx.Client(timeout=httpx.Timeout(3600.0, connect=30.0))
 app = FastAPI(title="GridCarousel Relay Node")
 
 
@@ -349,20 +350,17 @@ def checkin_set(set_id: str, manifest: list) -> list:
 # ---------- big-file drain (2-12 GB uploads) ----------
 
 def drain_buffer_jobs():
-    """Pull buffered big uploads from the API runner into my sets."""
+    """Pull buffered big uploads into my sets.
+
+    Buffers are durable release-asset parts (parts_json) when available;
+    falls back to the legacy API-runner buffer (/v1/buffer) otherwise.
+    """
     conn = db()
     conn.autocommit = True
     cur = conn.cursor()
-    cur.execute("SELECT v FROM meta WHERE k = 'tunnel_url'")
-    row = cur.fetchone()
-    if not row or not row[0]:
-        cur.close()
-        conn.close()
-        return
-    api_url = row[0]
     cur.execute(
         "SELECT id, target_id FROM jobs WHERE type = 'pool-store' AND status = 'queued' "
-        "ORDER BY id LIMIT 5 FOR UPDATE SKIP LOCKED"
+        "ORDER BY id LIMIT 2 FOR UPDATE SKIP LOCKED"
     )
     jobs = cur.fetchall()
     if not jobs:
@@ -378,41 +376,70 @@ def drain_buffer_jobs():
 
     for job_id, fid in jobs:
         try:
-            with client.stream("GET", f"{api_url}/v1/buffer/{fid}",
-                               headers={"X-Relay-Token": RELAY_TOKEN}) as r:
-                r.raise_for_status()
-                size = 0
-                tmp = Path(f"/tmp/drain-{fid}")
-                with open(tmp, "wb") as fh:
-                    for chunk in r.iter_bytes():
-                        fh.write(chunk)
-                        size += len(chunk)
             conn = db()
-            conn.autocommit = True
             cur = conn.cursor()
-            cur.execute("SELECT name, set_id FROM files WHERE id = %s", (fid,))
+            cur.execute("SELECT name, set_id, size, parts_json FROM files WHERE id = %s", (fid,))
             frow = cur.fetchone()
+            cur.close()
+            conn.close()
             if not frow:
+                conn = db()
+                conn.autocommit = True
+                cur = conn.cursor()
+                cur.execute("DELETE FROM jobs WHERE id = %s", (job_id,))
                 cur.close()
                 conn.close()
                 continue
-            name, set_id = frow
+            name, set_id, size, parts_json = frow
             dst = DATA / set_id
             dst.mkdir(parents=True, exist_ok=True)
-            (dst / name).write_bytes(tmp.read_bytes())
+            tmp = Path(f"/tmp/drain-{fid}")
+            got = 0
+            if parts_json:
+                with open(tmp, "wb") as fh:
+                    for p in json.loads(parts_json):
+                        with client.stream("GET", p["url"]) as r:
+                            r.raise_for_status()
+                            for chunk in r.iter_bytes():
+                                fh.write(chunk)
+                                got += len(chunk)
+            else:
+                conn = db()
+                conn.autocommit = True
+                cur = conn.cursor()
+                cur.execute("SELECT v FROM meta WHERE k = 'tunnel_url'")
+                row = cur.fetchone()
+                cur.close()
+                conn.close()
+                if not row or not row[0]:
+                    raise RuntimeError("no tunnel_url for legacy buffer drain")
+                api_url = row[0].strip()
+                with client.stream("GET", f"{api_url}/v1/buffer/{fid}",
+                                   headers={"X-Relay-Token": RELAY_TOKEN}) as r:
+                    r.raise_for_status()
+                    with open(tmp, "wb") as fh:
+                        for chunk in r.iter_bytes():
+                            fh.write(chunk)
+                            got += len(chunk)
+            if got != size:
+                raise RuntimeError(f"size mismatch: got {got} expected {size}")
+            with open(tmp, "rb") as fh, open(dst / name, "wb") as out:
+                shutil.copyfileobj(fh, out)
             tmp.unlink(missing_ok=True)
             url = f"{TUNNEL_URL}/v1/set/{set_id}/{quote(name)}"
+            conn = db()
+            conn.autocommit = True
+            cur = conn.cursor()
             cur.execute(
                 "UPDATE files SET url = %s, status = 'ready', path = %s WHERE id = %s",
                 (url, f"{set_id}/{name}", fid),
             )
-            cur.execute("UPDATE sets SET size_bytes = size_bytes + %s WHERE set_id = %s", (size, set_id))
+            cur.execute("UPDATE sets SET size_bytes = size_bytes + %s WHERE set_id = %s", (got, set_id))
             cur.execute("DELETE FROM jobs WHERE id = %s", (job_id,))
             conn.commit()
             cur.close()
             conn.close()
-            client.delete(f"{api_url}/v1/buffer/{fid}", headers={"X-Relay-Token": RELAY_TOKEN})
-            print(f"[relay] drained {name} ({size / (1024**3):.1f} GB) into {set_id}")
+            print(f"[relay] drained {name} ({got / (1024**3):.1f} GB) into {set_id}")
         except Exception as e:
             print(f"[relay] drain failed for {fid}: {e}")
             conn = db()

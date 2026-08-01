@@ -22,6 +22,7 @@ STORAGE_REPOS = [r.strip() for r in os.environ.get("STORAGE_REPOS", os.environ.g
 GH_TOKEN = os.environ["GH_TOKEN"]
 GIT_THRESHOLD = int(os.environ.get("UPLOAD_LIMIT_MB", "25")) * 1024 * 1024
 RELEASE_MAX = 2 * 1024 * 1024 * 1024          # GitHub release asset cap
+POOL_PART_MAX = int(1.8 * 1024 * 1024 * 1024)  # durable pool buffer part size
 POOL_MAX_GB = int(os.environ.get("POOL_MAX_GB", "12"))
 POOL_MAX = POOL_MAX_GB * 1024 * 1024 * 1024    # max file that fits a 14 GB pool node
 RELAY_TOKEN = os.environ.get("RELAY_TOKEN", "")
@@ -135,6 +136,18 @@ def release_upload(data: bytes, name: str, mime: str, tag: str, repo: str) -> st
         f"https://uploads.github.com/repos/{repo}/releases/{release_id}/assets?name={quote(name)}",
         headers={**GH, "Content-Type": mime or "application/octet-stream"},
         content=data,
+    )
+    r.raise_for_status()
+    return f"https://github.com/{repo}/releases/download/{tag}/{quote(name)}"
+
+
+def release_upload_stream(gen, name: str, mime: str, tag: str, repo: str) -> str:
+    """Upload a release asset from a streaming body (no full RAM copy)."""
+    release_id = ensure_release(tag, repo)
+    r = _gh.post(
+        f"https://uploads.github.com/repos/{repo}/releases/{release_id}/assets?name={quote(name)}",
+        headers={**GH, "Content-Type": mime or "application/octet-stream"},
+        content=gen,
     )
     r.raise_for_status()
     return f"https://github.com/{repo}/releases/download/{tag}/{quote(name)}"
@@ -416,6 +429,7 @@ def finalize_upload(name: str, mime: str, data_path: str, expires: datetime | No
     set_id = f"set-{int(digest[:2], 16) % SET_COUNT:02d}"
     repo = repo_for(set_id)
 
+    parts_json = None
     if size <= GIT_THRESHOLD:
         with open(data_path, "rb") as fh:
             git_store_bytes(fh.read(), rel, repo)
@@ -431,20 +445,43 @@ def finalize_upload(name: str, mime: str, data_path: str, expires: datetime | No
         store = "release"
         status = "ready"
     else:
-        # Big file (2-12 GB): only the relay pool can hold it.
-        # Buffer on the API runner; a carousel node drains it into its set.
-        os.makedirs(BUFFER_DIR, exist_ok=True)
-        dest = os.path.join(BUFFER_DIR, fid)
-        os.replace(data_path, dest)
+        # Big file (2-12 GB): only the relay pool can hold it. Buffer it
+        # durably as release-asset parts (survives runner rotation), then a
+        # carousel node drains the parts into its set whenever it boots.
+        tag = "pool-" + fid
+        parts = []
+        with open(data_path, "rb") as fh:
+            idx = 0
+            while True:
+                base = idx * POOL_PART_MAX
+                if base >= size:
+                    break
+                end = min(base + POOL_PART_MAX, size)
+
+                def part_gen(fh=fh, start=base, stop=end):
+                    fh.seek(start)
+                    remaining = stop - start
+                    while remaining > 0:
+                        chunk = fh.read(min(1 << 20, remaining))
+                        if not chunk:
+                            break
+                        remaining -= len(chunk)
+                        yield chunk
+
+                part_name = f"{name}.p{idx:03d}"
+                part_url = release_upload_stream(part_gen(), part_name, mime, tag, repo)
+                parts.append({"url": part_url, "size": end - base})
+                idx += 1
+        parts_json = json.dumps(parts)
+        os.remove(data_path)
         url = ""
         store = "pool"
         status = "buffered"
-        tag = None
 
     cur.execute(
-        "INSERT INTO files (id, sha, name, size, mime, store, path, release_tag, url, expires_at, set_id, repo, status) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-        (fid, digest, name, size, mime, store, rel, tag, url, expires, set_id, repo, status),
+        "INSERT INTO files (id, sha, name, size, mime, store, path, release_tag, url, expires_at, set_id, repo, status, parts_json) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+        (fid, digest, name, size, mime, store, rel, tag, url, expires, set_id, repo, status, parts_json),
     )
     conn.commit()
     cur.close()
@@ -604,13 +641,14 @@ def delete_file(file_id: str, x_api_key: str = Header("")):
     elif store == "archive":
         release_delete_parts(parts_json, tag, repo)
     elif store == "pool":
-        # disk copy lives on a carousel runner; mark deleted and the next
-        # check-in of that set prunes the file from disk + manifest.
+        # Durable buffer lives as release-asset parts; delete them, then mark
+        # the row deleted so the next carousel check-in prunes it from disk.
+        release_delete_parts(parts_json, tag, repo)
         cur.execute("UPDATE files SET status = 'deleted' WHERE id = %s", (file_id,))
         conn.commit()
         cur.close()
         conn.close()
-        return {"deleted": True, "note": "pool copy pruned at next carousel check-in"}
+        return {"deleted": True, "note": "pool parts removed; disk copy pruned at next carousel check-in"}
     else:
         release_delete(name, tag, repo)
     cur.execute("DELETE FROM files WHERE id = %s", (file_id,))
