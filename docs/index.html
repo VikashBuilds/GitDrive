@@ -61,13 +61,37 @@
   .muted { color:var(--dim); }
   .keyring { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:10px; }
   .keyring input[type=password] { width:280px; }
+  .gate { position:fixed; inset:0; background:rgba(5,8,12,.92); display:flex; align-items:center; justify-content:center; z-index:50; }
+  .gatecard { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:26px; width:min(420px, 92vw); }
+  .gatecard h2 { font-size:18px; margin-bottom:4px; }
+  .gatecard p { color:var(--dim); font-size:13px; margin-bottom:14px; }
+  .gatecard input { width:100%; margin-bottom:10px; background:#0d141b; border:1px solid var(--line); color:var(--txt); padding:10px 12px; border-radius:8px; font:inherit; }
+  .gatecard .rowbtn { display:flex; gap:8px; margin-top:4px; }
+  .gatecard .rowbtn button { flex:1; }
+  .gatebad { color:var(--bad); font-size:13px; min-height:18px; margin-bottom:6px; }
+  .hintline { font-size:12px; color:var(--dim); margin-top:8px; line-height:1.5; }
+  .lockpill { background:var(--warnbg); color:var(--warn); border:1px solid #6b5a1e; border-radius:999px; padding:2px 10px; font-size:11px; font-weight:600; cursor:pointer; }
   @media (max-width:700px){ .wlast, .acts { margin-left:0; } }
 </style>
 </head>
 <body>
+<div class="gate" id="gate">
+  <div class="gatecard">
+    <h2>🔒 GitDrive is locked</h2>
+    <p>This is your private dashboard — enter your API key to open it. Optionally set a master password to enable end-to-end encryption.</p>
+    <input type="password" id="gateKey" placeholder="API key (the one from Advanced settings)">
+    <input type="password" id="gatePass" placeholder="Master password (optional — enables E2E encryption)">
+    <div class="gatebad" id="gateErr"></div>
+    <div class="rowbtn">
+      <button onclick="unlock()">Unlock</button>
+    </div>
+    <div class="hintline">Encryption: files are encrypted in your browser before upload (AES-256). <b>Never lose the master password — it can't be recovered.</b> Unlocked keys live only in this tab.</div>
+  </div>
+</div>
+
 <header>
   <h1>GitDrive <span class="dot">●</span></h1>
-  <div class="statusline"><span id="updated">connecting…</span><span class="pill ok" id="livePill">connecting</span></div>
+  <div class="statusline"><span id="updated">connecting…</span><span class="pill ok" id="livePill">connecting</span><span class="lockpill" id="lockPill" style="display:none" onclick="lockE2E()" title="Click to lock (clears encryption keys from this tab)">🔐 E2E unlocked</span></div>
 </header>
 
 <div class="banner" id="banner"></div>
@@ -132,6 +156,104 @@ const WF_INFO = {
 };
 let lastData = null;
 
+// ---------- E2E encryption (WebCrypto, all client-side) ----------
+// Master key from password (PBKDF2) → per-file key (HKDF) → AES-256-GCM.
+// Ciphertext is stored on GitHub; without the password it's unreadable.
+let encMaster = null;            // CryptoKey — lives only in this tab
+const ECHUNK = 1024 * 1024;      // 1 MiB plaintext per cipher chunk
+const ENCMAGIC = new Uint8Array([0x47,0x44,0x45,0x4e,0x43,0x31]); // "GDENC1"
+
+function genFid(){ return Array.from(crypto.getRandomValues(new Uint8Array(6)), b => b.toString(16).padStart(2,"0")).join(""); }
+function b64(b){ return btoa(String.fromCharCode(...b)); }
+function unb64(s){ return Uint8Array.from(atob(s), c => c.charCodeAt(0)); }
+function concat(a, b){ const c = new Uint8Array(a.length + b.length); c.set(a); c.set(b); return c; }
+function encIv(idx){ const iv = new Uint8Array(12); new DataView(iv.buffer).setUint32(8, idx, false); return iv; }
+
+async function deriveMaster(password){
+  let saltHex = localStorage.getItem("gd_enc_salt");
+  const salt = saltHex ? unb64(saltHex) : crypto.getRandomValues(new Uint8Array(16));
+  if(!saltHex) localStorage.setItem("gd_enc_salt", b64(salt));
+  const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey({name:"PBKDF2", salt, iterations:200000, hash:"SHA-256"}, base,
+      {name:"AES-GCM", length:256}, false, ["encrypt","decrypt"]);
+}
+async function fileKey(fileId){
+  const info = new TextEncoder().encode("gitdrive:e2e:" + fileId);
+  return crypto.subtle.deriveKey({name:"HKDF", hash:"SHA-256", salt:new Uint8Array(16), info},
+      encMaster, {name:"AES-GCM", length:256}, false, ["encrypt","decrypt"]);
+}
+
+async function encryptSlice(slice, fileId, startIdx, first){
+  const key = await fileKey(fileId);
+  const parts = [];
+  if(first){
+    const h = new Uint8Array(10);
+    h.set(ENCMAGIC, 0);
+    new DataView(h.buffer).setUint32(6, ECHUNK, true);
+    parts.push(h);
+  }
+  let idx = startIdx;
+  for(let off = 0; off < slice.size; off += ECHUNK){
+    const s = slice.slice(off, Math.min(off + ECHUNK, slice.size));
+    const plain = new Uint8Array(await s.arrayBuffer());
+    const ct = new Uint8Array(await crypto.subtle.encrypt({name:"AES-GCM", iv: encIv(idx)}, key, plain));
+    parts.push(ct); idx++;
+  }
+  return { blob: new Blob(parts, {type:"application/octet-stream"}), nextIdx: idx };
+}
+
+async function decryptStream(res, fileId){
+  const key = await fileKey(fileId);
+  const reader = res.body.getReader();
+  const { value: head } = await reader.read();
+  if(!head) throw new Error("empty response");
+  for(let i = 0; i < ENCMAGIC.length; i++) if(head[i] !== ENCMAGIC[i]) throw new Error("not a GitDrive-encrypted file");
+  const chunkLen = new DataView(head.buffer, head.byteOffset, head.byteLength).getUint32(6, true);
+  const out = [];
+  let idx = 0, carry = head.subarray(10);
+  const want = chunkLen + 16;
+  while(true){
+    if(carry.length >= want){
+      const ct = carry.subarray(0, want);
+      const plain = await crypto.subtle.decrypt({name:"AES-GCM", iv: encIv(idx)}, key, ct);
+      out.push(plain); idx++; carry = carry.subarray(want);
+      continue;
+    }
+    const { value, done } = await reader.read();
+    if(done) break;
+    carry = concat(carry, value);
+  }
+  if(carry.length) throw new Error("truncated encrypted stream");
+  return new Blob(out);
+}
+
+// ---------- access gate ----------
+function unlock(){
+  const key = document.getElementById("gateKey").value.trim();
+  const pass = document.getElementById("gatePass").value;
+  const saved = localStorage.getItem(LS_KEY);
+  if(!key && !saved){ document.getElementById("gateErr").textContent = "API key is required."; return; }
+  if(key) localStorage.setItem(LS_KEY, key);
+  if(pass){
+    deriveMaster(pass).then(k => {
+      encMaster = k;
+      document.getElementById("lockPill").style.display = "";
+      document.getElementById("gate").style.display = "none";
+      toast("🔐 Encryption unlocked — new uploads will be encrypted.", 6000);
+      refresh();
+    }).catch(e => { document.getElementById("gateErr").textContent = "Key derivation failed: " + e.message; });
+    return;
+  }
+  document.getElementById("gate").style.display = "none";
+  refresh();
+}
+function lockE2E(){
+  encMaster = null;
+  document.getElementById("lockPill").style.display = "none";
+  toast("Encryption keys cleared from this tab. Encrypted downloads are locked until you unlock again.", 6000);
+}
+["gateKey","gatePass"].forEach(id => document.getElementById(id).addEventListener("keydown", e => { if(e.key === "Enter") unlock(); }));
+
 function toast(html, ms){ const t = document.getElementById("toast");
   t.innerHTML = html; t.style.display = "block"; clearTimeout(t._h); t._h = setTimeout(()=>t.style.display="none", ms||6000); }
 function copyText(t){ navigator.clipboard.writeText(t).then(()=>toast("Link copied to clipboard ✔", 2500)); }
@@ -142,7 +264,16 @@ async function tryFetch(url, opts){
   return res.json();
 }
 function headers(){ return {"X-API-Key": localStorage.getItem(LS_KEY) || ""}; }
-async function fetchDash(u){ return await tryFetch(u + "/v1/dashboard", {headers: headers()}); }
+function showGate(err){
+  document.getElementById("gateErr").textContent = err || "";
+  document.getElementById("gate").style.display = "flex";
+}
+async function fetchDash(u){
+  const res = await fetch(u + "/v1/dashboard", {headers: headers()});
+  if(res.status === 401){ showGate("API key rejected — check it below."); throw new Error("401"); }
+  if(!res.ok) throw new Error("HTTP " + res.status);
+  return res.json();
+}
 
 async function refresh(){
   const candidates = [base, FIXED_BASE, ...lastTunnels.filter(u => u !== base && u !== FIXED_BASE)].map(httpsize);
@@ -241,41 +372,53 @@ function renderFiles(files){
   const box = document.getElementById("files");
   if(!list.length){ box.innerHTML = '<div class="empty">No files yet — drop one in the upload box above.</div>'; return; }
   box.innerHTML = list.map(f => {
-    const ready = f.status === "ready";
-    const priv = !!f.private;
+    const dlReady = f.status === "ready" || (f.store === "pool" && f.status === "buffered");
+    const priv = !!f.private, enc = !!f.enc;
     const sname = {git:"small", release:"medium", archive:"archive", pool:"big file"}[f.store] || f.store;
-    const dl = priv
-      ? `<button class="small" ${ready ? "" : "disabled"} onclick="dlPrivate('${f.id}')" title="Downloads with your API key">Download</button>`
-      : `<button class="small" ${ready && f.url ? "" : "disabled"} onclick="window.open('${f.url}','_blank')">Download</button>
-         <button class="small" ${ready && f.url ? "" : "disabled"} onclick="copyText('${f.url}')">Copy link</button>`;
+    const metaBits = [fmtBytes(f.size), sname];
+    if(priv) metaBits.push("private");
+    if(enc) metaBits.push("encrypted");
+    metaBits.push("added " + ago(f.created_at));
     return `<div class="row">
-      <div style="min-width:0; flex:1"><div class="fname">${priv ? "🔒 " : ""}${f.name}</div>
-        <div class="fmeta">${fmtBytes(f.size)} · ${sname} · ${priv ? "private · " : ""}added ${ago(f.created_at)}</div></div>
-      <span class="chip ${ready ? "ok" : "warn"}">${ready ? "ready" : f.status}</span>
+      <div style="min-width:0; flex:1"><div class="fname">${priv ? "🔒 " : ""}${enc ? "🔐 " : ""}${f.name}</div>
+        <div class="fmeta">${metaBits.join(" · ")}</div></div>
+      <span class="chip ${dlReady ? "ok" : "warn"}">${f.status}</span>
       <div class="acts">
-        ${dl}
+        <button class="small" ${dlReady ? "" : "disabled"} onclick="downloadFile('${f.id}')" title="${enc ? "Decrypts in your browser with the master password" : "Downloads via the API"}">Download</button>
+        <button class="small" onclick="copyLink('${f.id}')">Copy link</button>
         <button class="small danger" onclick="delFile('${f.id}')">Delete</button>
       </div>
     </div>`;
   }).join("");
 }
 
-async function dlPrivate(id){
-  const f = (lastData.files || []).find(x => x.id === id);
+function fileById(id){ return (lastData.files || []).find(x => x.id === id); }
+
+async function downloadFile(id){
+  const f = fileById(id);
   if(!f) return;
-  if(!localStorage.getItem(LS_KEY)){ toast("Save your API key in Advanced settings to download private files.", 5000); return; }
+  if(f.enc && !encMaster){ toast("This file is encrypted — unlock with your master password to download it.", 6000); return; }
+  if(f.private && !localStorage.getItem(LS_KEY)){ toast("Save your API key to download private files.", 5000); return; }
+  const fast = !f.enc && !f.private && f.url && f.status === "ready" && f.store !== "pool";
+  if(fast){ window.open(f.url, "_blank"); return; }
   try {
     const res = await fetch(base + "/v1/download/" + id, {headers: headers()});
     if(!res.ok) throw new Error("HTTP " + res.status + (res.status === 401 ? " (bad API key?)" : ""));
-    const blob = await res.blob();
+    const blob = f.enc ? await decryptStream(res, id) : await res.blob();
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = f.name;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+    toast("Downloaded ✔ " + f.name, 5000);
   } catch(e){ toast("Download failed: " + e.message, 6000); }
+}
+
+function copyLink(id){
+  const f = fileById(id);
+  if(!f) return;
+  const url = (f.url && f.url.startsWith("http") && !f.enc) ? f.url : base + "/v1/download/" + id;
+  navigator.clipboard.writeText(url).then(() => toast((f.enc ? "Encrypted download link copied — needs your master password to open." : "Link copied to clipboard ✔"), 2500));
 }
 
 async function delFile(id){
@@ -302,15 +445,27 @@ async function dispatch(name){
 async function uploadFile(file){
   if(file.size > 90 * 1024 * 1024) return uploadBig(file);
   const msg = document.getElementById("upMsg");
-  msg.textContent = "Uploading " + file.name + " (" + fmtBytes(file.size) + ")…";
-  const fd = new FormData(); fd.append("file", file); fd.append("private", uploadPrivate);
+  const enc = !!encMaster;
+  const fid = enc ? genFid() : null;
+  msg.textContent = (enc ? "Encrypting & uploading " : "Uploading ") + file.name + " (" + fmtBytes(file.size) + ")…";
+  let body = file;
+  if(enc){
+    const e = await encryptSlice(file, fid, 0, true);
+    body = new File([e.blob], file.name + ".gd", {type:"application/octet-stream"});
+  }
+  const fd = new FormData();
+  fd.append("file", body);
+  fd.append("private", uploadPrivate);
+  if(enc){ fd.append("enc", "true"); fd.append("fid", fid); }
   try {
     const res = await fetch(base + "/v1/upload", {method:"POST", headers: headers(), body: fd});
     const data = await res.json();
     if(!res.ok) throw new Error(data.detail || ("HTTP " + res.status));
     msg.textContent = "";
-    if(data.private){
-      toast("Uploaded privately ✔ " + data.name + " — " + fmtBytes(data.size || file.size) + ". Download it from the list with your API key.", 8000);
+    if(enc){
+      toast("🔐 Uploaded & encrypted ✔ " + data.name + " — only your master password can open it.", 8000);
+    } else if(data.private){
+      toast("Uploaded privately ✔ " + data.name + " — download it from the list with your API key.", 8000);
     } else {
       toast("Uploaded ✔ <a href='" + (data.url || "#") + "'>" + data.name + "</a> — " + fmtBytes(data.size || file.size), 8000);
     }
@@ -322,30 +477,39 @@ async function uploadFile(file){
 
 async function uploadBig(file){
   const msg = document.getElementById("upMsg");
+  const enc = !!encMaster;
+  let fid = enc ? genFid() : null;
   const CH = 64 * 1024 * 1024; // 64 MB chunks — under the tunnel's 100 MB cap
   const q = new URLSearchParams({name: file.name, total_size: file.size, mime: file.type || "", private: uploadPrivate});
-  let fid;
+  if(enc){ q.set("enc", "true"); q.set("fid", fid); }
   try {
     const d = await tryFetch(base + "/v1/upload/start?" + q, {method:"POST", headers: headers()});
     fid = d.id;
   } catch(e){ msg.textContent = "Upload failed to start: " + e.message; return; }
-  let off = 0;
+  let off = 0, cOff = 0, cidx = 0;
   try {
     while(off < file.size){
-      const blob = file.slice(off, Math.min(off + CH, file.size));
-      const res = await fetch(base + "/v1/upload/chunk/" + fid + "?offset=" + off, {method:"POST", headers: headers(), body: blob});
+      const slice = file.slice(off, Math.min(off + CH, file.size));
+      let chunk = slice;
+      if(enc){
+        msg.textContent = "Encrypting " + file.name + " — " + fmtBytes(off) + " of " + fmtBytes(file.size) + "…";
+        const e = await encryptSlice(slice, fid, cidx, off === 0);
+        chunk = e.blob; cidx = e.nextIdx;
+      }
+      const res = await fetch(base + "/v1/upload/chunk/" + fid + "?offset=" + cOff, {method:"POST", headers: headers(), body: chunk});
       if(!res.ok){
         let detail = "";
         try { detail = (await res.json()).detail || ""; } catch(e2){}
         if(res.status === 409 && detail.indexOf("offset mismatch") === 0){
-          off = parseInt(detail.split(" ").pop(), 10) || off;
+          cOff = parseInt(detail.split(" ").pop(), 10) || cOff;
           continue;
         }
-        throw new Error("chunk at " + fmtBytes(off) + ": " + (detail || res.status));
+        throw new Error("chunk at " + fmtBytes(cOff) + ": " + (detail || res.status));
       }
-      off += blob.size;
+      off += slice.size;
+      cOff += chunk.size;
       const pct = Math.round(off / file.size * 100);
-      msg.textContent = "Uploading " + file.name + " — " + fmtBytes(off) + " of " + fmtBytes(file.size) + " (" + pct + "%)";
+      msg.textContent = (enc ? "Encrypting & uploading " : "Uploading ") + file.name + " — " + fmtBytes(off) + " of " + fmtBytes(file.size) + " (" + pct + "%)";
     }
     await tryFetch(base + "/v1/upload/complete/" + fid, {method:"POST", headers: headers()});
     msg.textContent = "Uploaded " + fmtBytes(file.size) + " — GitDrive is finalizing (a few minutes)…";
@@ -355,7 +519,9 @@ async function uploadBig(file){
         const f = await tryFetch(base + "/v1/file/" + fid, {headers: headers()});
         if(f.status === "ready"){
           msg.textContent = "";
-          if(f.private){
+          if(f.enc){
+            toast("🔐 Uploaded & encrypted ✔ " + f.name + " — only your master password can open it.", 9000);
+          } else if(f.private){
             toast("Uploaded privately ✔ " + f.name + " — download it from the list with your API key.", 9000);
           } else {
             toast("Uploaded ✔ <a href='" + f.url + "'>" + f.name + "</a> — " + fmtBytes(f.size), 9000);
@@ -399,8 +565,10 @@ fi.onchange = () => { if(fi.files[0]) uploadFile(fi.files[0]); fi.value = ""; };
 drop.addEventListener("drop", e => { const f = e.dataTransfer.files[0]; if(f) uploadFile(f); });
 
 document.getElementById("apiBase").value = base;
-if(localStorage.getItem(LS_KEY)) document.getElementById("apiKey").value = "••••••";
+if(localStorage.getItem(LS_KEY)) document.getElementById("gateKey").placeholder = "API key saved — leave empty to use it";
 document.getElementById("search").addEventListener("input", () => lastData && renderFiles(lastData.files));
+
+showGate(""); // locked until you unlock with your API key (and optional master password)
 
 setInterval(() => { refresh(); if(lastData) document.getElementById("updated").textContent = "updated " + ago(new Date().toISOString()); }, 30000);
 refresh();

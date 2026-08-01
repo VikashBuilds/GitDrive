@@ -192,11 +192,13 @@ def release_delete_parts(parts_json: str, tag: str, repo: str):
             _gh.delete(f"https://api.github.com/repos/{repo}/releases/assets/{asset['id']}", headers=GH)
 
 
-def enqueue_compress(file_id: str, size: int, mime: str):
+def enqueue_compress(file_id: str, size: int, mime: str, enc: bool = False):
     if not mime:
         return
     if size < 200_000:
         return
+    if enc:
+        return  # ciphertext is opaque — compression would shred it
     if mime.startswith("image/") or mime.startswith("video/"):
         conn = db()
         conn.autocommit = True
@@ -460,7 +462,7 @@ async def download(file_id: str, x_api_key: str = Header("")):
     conn = db()
     cur = conn.cursor()
     cur.execute(
-        "SELECT store, url, name, parts_json, status, repo, path, size, release_tag, private "
+        "SELECT store, url, name, parts_json, status, repo, path, size, release_tag, private, enc "
         "FROM files WHERE id = %s",
         (file_id,),
     )
@@ -469,7 +471,7 @@ async def download(file_id: str, x_api_key: str = Header("")):
     conn.close()
     if not row:
         raise HTTPException(404, "not found")
-    store, url, name, parts_json, status, repo, path, size, tag, private = row
+    store, url, name, parts_json, status, repo, path, size, tag, private, enc = row
     if private and x_api_key not in _API_KEY_PLAIN:
         raise HTTPException(401, "private file — X-API-Key required")
     conn = db()
@@ -480,8 +482,33 @@ async def download(file_id: str, x_api_key: str = Header("")):
     conn.close()
     if store == "pool" and status == "deleted":
         raise HTTPException(410, "file deleted — copy pruned from pool")
-    if private:
+    if private or enc:
+        # private → authenticated proxy; enc → route through the API so the
+        # browser can decrypt the ciphertext client-side (no CORS redirect).
         return _download_private(store, name, repo, tag, path, parts_json, size)
+    if store == "pool" and (not url or not url.startswith("http")):
+        # Buffered big file: durable parts already exist in the release —
+        # stream them now instead of waiting for a pool node to claim it.
+        parts = json.loads(parts_json or "[]")
+        if not parts:
+            raise HTTPException(404, "no parts yet — still buffering")
+        total = sum(p["size"] for p in parts)
+
+        async def gen_pool():
+            for p in parts:
+                async with _gh_async.stream("GET", p["url"]) as r:
+                    r.raise_for_status()
+                    async for chunk in r.aiter_bytes(1024 * 256):
+                        yield chunk
+
+        return StreamingResponse(
+            gen_pool(),
+            media_type="application/octet-stream",
+            headers={
+                "Content-Length": str(total),
+                "Content-Disposition": f'attachment; filename="{name}"',
+            },
+        )
     if store == "archive":
         parts = json.loads(parts_json or "[]")
         if not parts:
@@ -507,12 +534,14 @@ async def download(file_id: str, x_api_key: str = Header("")):
 
 
 def finalize_upload(name: str, mime: str, data_path: str, expires: datetime | None = None,
-                    fid: str | None = None, private: bool = False):
+                    fid: str | None = None, private: bool = False, enc: bool = False):
     """Shared tail of upload: hash, dedupe, tier decision, record row.
 
     Works on a spool file so big uploads never sit fully in RAM.
     Private files land in PRIVATE_STORAGE_REPOS and are served through
     /v1/download (authenticated proxy) instead of public GitHub URLs.
+    Enc files are opaque client-side ciphertext: never compressed, and
+    /v1/download streams them through the API so the browser can decrypt.
     """
     size = os.path.getsize(data_path)
     sha = hashlib.sha256()
@@ -525,15 +554,15 @@ def finalize_upload(name: str, mime: str, data_path: str, expires: datetime | No
     cur = conn.cursor()
     cur.execute(
         "SELECT id, url, size, mime, status, expires_at, download_count FROM files "
-        "WHERE sha = %s AND private = %s",
-        (digest, private),
+        "WHERE sha = %s AND private = %s AND enc = %s",
+        (digest, private, enc),
     )
     row = cur.fetchone()
     if row:
         cur.close()
         conn.close()
         return {"id": row[0], "url": row[1], "size": row[2], "mime": row[3], "deduped": True,
-                "expires_at": row[5].isoformat() if row[5] else None, "private": private}
+                "expires_at": row[5].isoformat() if row[5] else None, "private": private, "enc": enc}
 
     fid = fid or uuid.uuid4().hex[:12]
     now = datetime.now(timezone.utc)
@@ -617,9 +646,9 @@ def finalize_upload(name: str, mime: str, data_path: str, expires: datetime | No
         status = "buffered"
 
     cur.execute(
-        "INSERT INTO files (id, sha, name, size, mime, store, path, release_tag, url, expires_at, set_id, repo, status, parts_json, private) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-        (fid, digest, name, size, mime, store, rel, tag, url, expires, set_id, repo, status, parts_json, private),
+        "INSERT INTO files (id, sha, name, size, mime, store, path, release_tag, url, expires_at, set_id, repo, status, parts_json, private, enc) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+        (fid, digest, name, size, mime, store, rel, tag, url, expires, set_id, repo, status, parts_json, private, enc),
     )
     conn.commit()
     cur.close()
@@ -635,17 +664,22 @@ def finalize_upload(name: str, mime: str, data_path: str, expires: datetime | No
         cur2.close()
         conn2.close()
 
-    enqueue_compress(fid, size, mime)
+    enqueue_compress(fid, size, mime, enc)
     note = "queued for relay pool" if store == "pool" else None
     return {"id": fid, "name": name, "size": size, "mime": mime, "url": url,
-            "deduped": False, "status": status, "note": note, "private": private,
+            "deduped": False, "status": status, "note": note, "private": private, "enc": enc,
             "expires_at": expires.isoformat() if expires else None}
 
 
 @app.post("/v1/upload")
-async def upload(file: UploadFile = File(...), private: bool = Form(False),
-                 x_api_key: str = Header(""), expire_days: int | None = Form(None)):
+async def upload(file: UploadFile = File(...), private: bool = Form(False), enc: bool = Form(False),
+                 fid: str | None = Form(None), x_api_key: str = Header(""),
+                 expire_days: int | None = Form(None)):
     check_key(x_api_key, need="upload")
+    if fid is not None and not re.fullmatch(r"[0-9a-f]{12}", fid):
+        raise HTTPException(400, "fid must be 12 hex chars")
+    if fid is not None and os.path.exists(os.path.join(BUFFER_DIR, f"{fid}.up")):
+        raise HTTPException(409, "fid already in use")
     name = re.sub(r"[^A-Za-z0-9._-]", "_", file.filename or "file")
     ext = os.path.splitext(name)[1].lower()
     mime = (file.content_type or "").lower()
@@ -666,7 +700,7 @@ async def upload(file: UploadFile = File(...), private: bool = Form(False),
         if total > POOL_MAX:
             raise HTTPException(413, f"file too large (max {POOL_MAX_GB} GB — pool limit)")
         expires = datetime.now(timezone.utc) + timedelta(days=expire_days) if expire_days else None
-        result = finalize_upload(name, mime, spool, expires=expires, private=private)
+        result = finalize_upload(name, mime, spool, expires=expires, fid=fid, private=private, enc=enc)
     finally:
         if os.path.exists(spool):
             os.remove(spool)
@@ -675,9 +709,11 @@ async def upload(file: UploadFile = File(...), private: bool = Form(False),
 
 @app.post("/v1/upload/start")
 async def upload_start(name: str, total_size: int, mime: str = "", private: bool = False,
-                       x_api_key: str = Header("")):
+                       enc: bool = False, fid: str | None = None, x_api_key: str = Header("")):
     """Open a chunked upload session (bypasses the 100 MB edge cap)."""
     check_key(x_api_key, need="upload")
+    if fid is not None and not re.fullmatch(r"[0-9a-f]{12}", fid):
+        raise HTTPException(400, "fid must be 12 hex chars")
     if total_size > POOL_MAX:
         raise HTTPException(413, f"file too large (max {POOL_MAX_GB} GB — pool limit)")
     safe = re.sub(r"[^A-Za-z0-9._-]", "_", name or "file")
@@ -686,12 +722,13 @@ async def upload_start(name: str, total_size: int, mime: str = "", private: bool
         raise HTTPException(415, "mime type not allowed")
     if total_size <= 0:
         raise HTTPException(400, "total_size must be positive")
-    fid = uuid.uuid4().hex[:12]
+    fid = fid or uuid.uuid4().hex[:12]
     os.makedirs(BUFFER_DIR, exist_ok=True)
     with open(os.path.join(BUFFER_DIR, f"{fid}.up"), "wb"):
         pass
     with open(os.path.join(BUFFER_DIR, f"{fid}.meta"), "w") as fh:
-        json.dump({"name": safe, "mime": mime or "", "total_size": total_size, "private": private, "created": time.time()}, fh)
+        json.dump({"name": safe, "mime": mime or "", "total_size": total_size, "private": private,
+                   "enc": enc, "created": time.time()}, fh)
     return {"id": fid, "total_size": total_size}
 
 
@@ -738,15 +775,17 @@ async def upload_complete(fid: str, background: BackgroundTasks, x_api_key: str 
         meta = json.load(fh)
     if os.path.getsize(path) != meta["total_size"]:
         raise HTTPException(400, f"incomplete upload: {os.path.getsize(path)}/{meta['total_size']}")
-    background.add_task(finalize_upload, meta["name"], meta["mime"], path, None, fid, meta.get("private", False))
+    background.add_task(finalize_upload, meta["name"], meta["mime"], path, None, fid,
+                        meta.get("private", False), meta.get("enc", False))
     return {"id": fid, "status": "processing", "note": "finalizing in background; poll /v1/file/{id}"}
 
 
 @app.get("/v1/file/{file_id}")
-def get_file(file_id: str):
+def get_file(file_id: str, x_api_key: str = Header("")):
+    check_key(x_api_key)
     conn = db()
     cur = conn.cursor()
-    cur.execute("SELECT id, name, size, mime, url, status, expires_at, download_count, created_at, private FROM files WHERE id = %s", (file_id,))
+    cur.execute("SELECT id, name, size, mime, url, status, expires_at, download_count, created_at, private, enc FROM files WHERE id = %s", (file_id,))
     row = cur.fetchone()
     cur.close()
     conn.close()
@@ -754,23 +793,25 @@ def get_file(file_id: str):
         raise HTTPException(404, "not found")
     return {"id": row[0], "name": row[1], "size": row[2], "mime": row[3], "url": row[4],
             "status": row[5], "expires_at": row[6].isoformat() if row[6] else None,
-            "downloads": row[7], "created_at": row[8].isoformat(), "private": row[9]}
+            "downloads": row[7], "created_at": row[8].isoformat(), "private": row[9], "enc": row[10]}
 
 
 @app.get("/v1/files")
-def list_files(limit: int = 50, offset: int = 0, mime: str | None = None):
+def list_files(limit: int = 50, offset: int = 0, mime: str | None = None,
+               x_api_key: str = Header("")):
+    check_key(x_api_key)
     conn = db()
     cur = conn.cursor()
     if mime:
-        cur.execute("SELECT id, name, size, mime, url, created_at, private FROM files WHERE mime LIKE %s ORDER BY created_at DESC LIMIT %s OFFSET %s",
+        cur.execute("SELECT id, name, size, mime, url, created_at, private, enc FROM files WHERE mime LIKE %s ORDER BY created_at DESC LIMIT %s OFFSET %s",
                     (mime + "%", limit, offset))
         items = [{"id": r[0], "name": r[1], "size": r[2], "mime": r[3], "url": r[4],
-                  "created_at": r[5].isoformat(), "private": r[6]} for r in cur.fetchall()]
+                  "created_at": r[5].isoformat(), "private": r[6], "enc": r[7]} for r in cur.fetchall()]
         cur.execute("SELECT count(*) FROM files WHERE mime LIKE %s", (mime + "%",))
     else:
-        cur.execute("SELECT id, name, size, mime, url, created_at, private FROM files ORDER BY created_at DESC LIMIT %s OFFSET %s", (limit, offset))
+        cur.execute("SELECT id, name, size, mime, url, created_at, private, enc FROM files ORDER BY created_at DESC LIMIT %s OFFSET %s", (limit, offset))
         items = [{"id": r[0], "name": r[1], "size": r[2], "mime": r[3], "url": r[4],
-                  "created_at": r[5].isoformat(), "private": r[6]} for r in cur.fetchall()]
+                  "created_at": r[5].isoformat(), "private": r[6], "enc": r[7]} for r in cur.fetchall()]
         cur.execute("SELECT count(*) FROM files")
     total = cur.fetchone()[0]
     cur.close()
@@ -813,7 +854,8 @@ def delete_file(file_id: str, x_api_key: str = Header("")):
 
 
 @app.get("/v1/stats")
-def stats():
+def stats(x_api_key: str = Header("")):
+    check_key(x_api_key)
     conn = db()
     cur = conn.cursor()
     cur.execute("SELECT count(*), coalesce(sum(size), 0) FROM files")
@@ -843,7 +885,8 @@ _workflows_cache = {"t": 0.0, "data": []}
 
 
 @app.get("/v1/dashboard")
-def dashboard():
+def dashboard(x_api_key: str = Header("")):
+    check_key(x_api_key)
     conn = db()
     cur = conn.cursor()
     cur.execute("SELECT count(*), coalesce(sum(size), 0) FROM files WHERE status <> 'deleted'")
@@ -851,12 +894,13 @@ def dashboard():
     cur.execute("SELECT count(*) FROM files WHERE status = 'deleted'")
     deleted = cur.fetchone()[0]
     cur.execute(
-        "SELECT id, name, size, store, status, url, created_at, private FROM files "
+        "SELECT id, name, size, store, status, url, created_at, private, enc FROM files "
         "WHERE status <> 'deleted' ORDER BY created_at DESC LIMIT 20"
     )
     files = [
         {"id": r[0], "name": r[1], "size": r[2], "store": r[3], "status": r[4],
-         "url": r[5], "created_at": r[6].isoformat() if r[6] else None, "private": r[7]}
+         "url": r[5], "created_at": r[6].isoformat() if r[6] else None,
+         "private": r[7], "enc": r[8]}
         for r in cur.fetchall()
     ]
     cur.execute("SELECT id, type, status, attempts, target_id, updated_at FROM jobs ORDER BY id DESC LIMIT 15")
