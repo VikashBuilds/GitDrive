@@ -78,7 +78,7 @@ jobs:
           RATE_LIMIT_PER_HOUR: '60'
         run: |
           python app/server.py &
-          sleep 345 && kill %1 || true
+          sleep 1800 && kill %1 || true
 
       - name: Chain next run
         if: always()
