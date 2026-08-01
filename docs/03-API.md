@@ -4,6 +4,8 @@ Base URL: `https://drive.vikashbuilds.in` (Cloudflare tunnel → the 24/7 runner
 
 Auth: `X-API-Key: <key>` header on all write endpoints (see `06-SECURITY.md`).
 
+Keys can be scoped: `key:upload` (upload-only) or plain `key` (admin — upload, delete, dispatch). Send `private=true` (form field or query param) to store the file privately.
+
 ---
 
 ## `POST /v1/upload`
@@ -15,6 +17,7 @@ curl -X POST https://drive.vikashbuilds.in/v1/upload \
   -H "X-API-Key: $KEY" \
   -F "file=@hero-banner.png" \
   -F "expire_days=30"          # optional: auto-delete after 30 days
+  -F "private=true"            # optional: private storage (default false)
 ```
 
 **Response 200:**
@@ -26,11 +29,13 @@ curl -X POST https://drive.vikashbuilds.in/v1/upload \
   "mime": "image/png",
   "url": "https://raw.githubusercontent.com/vikashbuilds/gitdrive-1/main/files/2026/08/a3/9f2k1a_hero-banner.png",
   "deduped": false,
+  "private": false,
   "expires_at": null
 }
 ```
 
-- `deduped: true` → file already existed (same SHA-256); returns the existing record, **stored 0 extra bytes**
+- `deduped: true` → file already existed (same SHA-256 + same visibility); returns the existing record, **stored 0 extra bytes**
+- **Private uploads** (`private=true`) land in `VikashBuilds/private-p*` repos, `url` becomes `/v1/download/<id>`, and the file is ONLY reachable via that authenticated proxy — never a public GitHub URL. Private files never dedupe against public ones (or vice versa).
 
 ---
 
@@ -38,7 +43,7 @@ curl -X POST https://drive.vikashbuilds.in/v1/upload \
 
 Fetch metadata for one file.
 
-**Response 200:** same object as upload, plus `download_count`, `status` (`ready` | `compressing` | `compressed`), `created_at`.
+**Response 200:** same object as upload, plus `download_count`, `status` (`ready` | `compressing` | `compressed`), `created_at`, `private`.
 
 **404:** unknown id.
 
@@ -46,7 +51,7 @@ Fetch metadata for one file.
 
 ## `GET /v1/files?limit=50&offset=0&mime=image/png`
 
-List files (newest first). Optional `mime` filter. Returns `{ items: [...], total }`.
+List files (newest first). Optional `mime` filter. Returns `{ items: [...], total }`. Each item includes `private`.
 
 ---
 
@@ -92,6 +97,7 @@ Liveness probe: `{ "ok": true, "uptime_s": 12345 }` — used by GridLive/uptime 
 | Code | When |
 |---|---|
 | 401 | missing/invalid API key |
+| 403 | upload-scoped key used for an admin action (delete/dispatch) |
 | 413 | file > 2 GB |
 | 415 | blocked mime type (see security doc) |
 | 429 | rate limited (default 60 uploads/hour/key) |
@@ -103,12 +109,18 @@ Liveness probe: `{ "ok": true, "uptime_s": 12345 }` — used by GridLive/uptime 
 
 Stream any file as one continuous download:
 
-- git/release files → 302 redirect to the CDN URL
+- public git/release files → 302 redirect to the CDN URL
 - **archive files → server concatenates all release parts on the fly** (correct `Content-Length`, attachment filename)
+- **private files → proxied through authenticated GitHub API** (send `X-API-Key`); the private GitHub URL is never exposed
 
 ```
 curl -O https://drive.vikashbuilds.in/v1/download/abc123
 ```
+
+| Code | When |
+|---|---|
+| 401 | private file without a valid `X-API-Key` |
+| 404 | private release/parts missing |
 
 ---
 
