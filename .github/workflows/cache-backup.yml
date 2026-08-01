@@ -16,6 +16,7 @@ jobs:
       matrix: ${{ steps.chunks.outputs.matrix }}
       date: ${{ steps.chunks.outputs.date }}
     steps:
+      - uses: actions/checkout@v4
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -46,6 +47,7 @@ jobs:
     needs: prepare
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
