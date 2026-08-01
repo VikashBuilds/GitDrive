@@ -93,6 +93,16 @@ These were found while deploying for real; each is fixed in code but worth knowi
 | Archive sha `archive-<size>-<name>` | UNIQUE violation on repeated uploads → 500 | sha now includes the file id |
 | Free cloudflared tunnel drops rapid requests | random 520/530/HTML pages | verify harness retries 5xx/network errors |
 | `gh` token lacks `workflow` scope | pushes touching `.github/workflows/*` rejected | `gh auth refresh -s workflow` once |
+| Cloudflare **100 MB body cap** on free quick tunnels | 413 Payload Too Large on any big upload | chunked upload protocol `/v1/upload/start \| chunk \| complete` (client: `scripts/upload_chunked.py`) |
+| Pre-truncated spool in `/v1/upload/start` | every chunk 409 "offset mismatch" | start with an EMPTY spool file |
+| 500 on `/v1/upload/complete` | FK violation `jobs.target_id` → `files(id)` | insert the `pool-store` job AFTER the files row |
+| Sync finalize in `/v1/upload/complete` | Cloudflare 524 (>100 s work) | finalize runs as a **BackgroundTask**; client polls `GET /v1/file/{id}` |
+| Chunked session id ≠ file id | client polls forever | finalize reuses the session id as the file id |
+| Buffered spool lives only on the API runner | drain (hours later) finds 404 → orphaned job | pool buffers are **release-asset parts** (`parts_json`), durable until a node drains them |
+| `uploads.github.com` rejects streamed/chunked bodies | 400 on generator `content=` | stage each part to disk, upload with `curl -T` (real Content-Length) |
+| GitHub asset URLs **302→CDN** | drain fails on redirect | carousel client uses `follow_redirects=True` |
+| Empty `TUNNEL_URL` clobbers DB on slow cloudflared | `tunnel_url` = "" in meta | publish step skips empty values |
+| upload-service window too short (345 s) | multi-GB upload 502 mid-flight | window raised to 1800 s (30 min) |
 
 > [!TIP]
 > The `verify-cycle` workflow runs the full battery daily and fails loudly if any tier breaks — the tunnel rotation and flakiness are already handled inside it.
