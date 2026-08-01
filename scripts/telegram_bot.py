@@ -186,24 +186,20 @@ def stats_text() -> str:
     return "\n".join(lines)
 
 
-def files_page(page: int, total: int) -> str:
+def files_message(page: int):
     data = api_call("GET", f"/v1/files?limit={PAGE}&offset={page*PAGE}")
     items = data.get("items") or []
+    total = data.get("total", 0)
     if not items:
-        return "📁 No files here yet.\n\nSend me a document to upload the first one!"
-    lines = [f"📁 Your files (page {page+1})", ""]
+        return "📁 No files here yet.\n\nSend me a document to upload the first one!", menu_markup()
+    pages = max(1, (total + PAGE - 1) // PAGE)
+    lines = [f"📁 Your files (page {page+1} of {pages})", ""]
+    rows = []
     for i, f in enumerate(items, 1):
         lines.append(f"{i}. {esc(f.get('name'))} — {fmt_bytes(f.get('size'))} — {fmt_age(f.get('created_at'))}")
+        rows.append((btn(str(i), f"file:{f.get('id')}"),))
     lines.append("")
-    lines.append(f"Tap a number for details. {data.get('total', 0)} files total.")
-    return "\n".join(lines)
-
-
-def files_markup(page: int, total: int):
-    pages = max(1, (total + PAGE - 1) // PAGE)
-    rows = []
-    for i, off in enumerate(range(page * PAGE, min(page * PAGE + PAGE, total))):
-        rows.append((btn(str(i + 1), f"file:{off}"),))
+    lines.append(f"Tap a number for details. {total} files total.")
     nav = []
     if page > 0:
         nav.append(btn("◀️", f"files:{page-1}"))
@@ -211,7 +207,7 @@ def files_markup(page: int, total: int):
     if page < pages - 1:
         nav.append(btn("▶️", f"files:{page+1}"))
     rows.append(tuple(nav))
-    return kb(*rows)
+    return "\n".join(lines), kb(*rows)
 
 
 def file_text(f) -> str:
@@ -264,8 +260,8 @@ def handle_callback(chat_id: int, message_id: int, data: str):
     if data.startswith("files:"):
         try:
             page = int(data.split(":", 1)[1])
-            total = api_call("GET", f"/v1/files?limit=1&offset=0").get("total", 0)
-            edit(chat_id, message_id, files_page(page, total), markup=files_markup(page, total))
+            text, markup = files_message(page)
+            edit(chat_id, message_id, text, markup=markup)
         except Exception as e:
             edit(chat_id, message_id, f"⚠️ Couldn't list files: {e}", markup=menu_markup())
         return
@@ -310,8 +306,8 @@ def handle_command(chat_id: int, text: str):
         return
     if cmd == "/files":
         try:
-            total = api_call("GET", "/v1/files?limit=1&offset=0").get("total", 0)
-            send(chat_id, files_page(0, total), markup=files_markup(0, total))
+            text, markup = files_message(0)
+            send(chat_id, text, markup=markup)
         except Exception as e:
             send(chat_id, f"⚠️ Couldn't list files: {e}", markup=menu_markup())
         return
