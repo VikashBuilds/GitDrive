@@ -238,6 +238,9 @@ def startup():
         "WHERE j.type = 'compress' AND j.status = 'queued' AND f.id = j.target_id "
         "AND (f.enc OR f.private OR f.size > 52428800 OR f.url NOT LIKE '%/files/%')"
     )
+    # Stale chunked-upload sessions: no chunks for 2+ hours are abandoned
+    # (tab closed, machine off). Mark them failed so the dashboard shows it.
+    cur.execute("UPDATE files SET status = 'failed' WHERE status = 'uploading' AND created_at < now() - interval '2 hours'")
     cur.close()
     conn.close()
 
@@ -733,7 +736,13 @@ async def upload(file: UploadFile = File(...), private: bool = Form(False), enc:
 @app.post("/v1/upload/start")
 async def upload_start(name: str, total_size: int, mime: str = "", private: bool = False,
                        enc: bool = False, fid: str | None = None, x_api_key: str = Header("")):
-    """Open a chunked upload session (bypasses the 100 MB edge cap)."""
+    """Open a chunked upload session (bypasses the 100 MB edge cap).
+
+    Every chunk is stored durably as a release-asset part (like archives), so
+    uploads survive service restarts: the client can re-open the session with
+    the same fid and resume from the returned offset. Offsets are chunk-aligned
+    (a chunk counts only once fully stored).
+    """
     check_key(x_api_key, need="upload", mutating=True)
     if fid is not None and not re.fullmatch(r"[0-9a-f]{12}", fid):
         raise HTTPException(400, "fid must be 12 hex chars")
@@ -746,61 +755,113 @@ async def upload_start(name: str, total_size: int, mime: str = "", private: bool
     if total_size <= 0:
         raise HTTPException(400, "total_size must be positive")
     fid = fid or uuid.uuid4().hex[:12]
-    os.makedirs(BUFFER_DIR, exist_ok=True)
-    with open(os.path.join(BUFFER_DIR, f"{fid}.up"), "wb"):
-        pass
-    with open(os.path.join(BUFFER_DIR, f"{fid}.meta"), "w") as fh:
-        json.dump({"name": safe, "mime": mime or "", "total_size": total_size, "private": private,
-                   "enc": enc, "created": time.time()}, fh)
-    return {"id": fid, "total_size": total_size}
+    set_id = f"set-{int(fid[:2], 16) % SET_COUNT:02d}"
+    repo = private_repo_for(set_id) if private else repo_for(set_id)
+    tag = f"pool-{fid}"
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("SELECT parts_json, status, size FROM files WHERE id = %s", (fid,))
+    row = cur.fetchone()
+    if row:
+        # Existing session (same service, or a resume after a restart): report
+        # the durable offset so the client can continue instead of restarting.
+        have = sum(p["size"] for p in json.loads(row[0] or "[]"))
+        cur.execute("UPDATE files SET status = 'uploading', name = %s WHERE id = %s", (safe, fid))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return {"id": fid, "offset": have, "total_size": total_size,
+                "done": have >= total_size}
+    ensure_release(tag, repo)
+    cur.execute(
+        "INSERT INTO files (id, sha, name, size, mime, store, path, release_tag, url, status, set_id, repo, parts_json, private, enc) "
+        "VALUES (%s, %s, %s, %s, %s, 'pool', %s, %s, '', 'uploading', %s, %s, '[]', %s, %s)",
+        (fid, f"pool-{fid}", safe, total_size, mime, f"parts/{fid}", tag, set_id, repo, private, enc),
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+    return {"id": fid, "offset": 0, "total_size": total_size}
 
 
 @app.post("/v1/upload/chunk/{fid}")
 async def upload_chunk(fid: str, offset: int, request: Request, x_api_key: str = Header("")):
-    """Append a â‰¤90 MB chunk at a fixed offset; 409 with current offset if stale."""
+    """Store one <=90 MB chunk as a release-asset part; 409 with offset if stale.
+
+    Chunks are durable the moment they are acked: the part lives in the release
+    and the offset lives in the DB, so a service restart loses nothing.
+    """
     check_key(x_api_key, need="upload", mutating=True)
-    path = os.path.join(BUFFER_DIR, f"{fid}.up")
-    if not os.path.exists(path):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("SELECT name, repo, release_tag, parts_json, size FROM files WHERE id = %s AND store = 'pool' AND status = 'uploading'", (fid,))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    if not row:
         raise HTTPException(404, "upload session not found")
-    size = os.path.getsize(path)
-    if offset != size:
-        raise HTTPException(409, f"offset mismatch: have {size}")
-    received = 0
-    with open(path, "r+b") as fh:
-        fh.seek(offset)
-        async for chunk in request.stream():
-            fh.write(chunk)
-            received += len(chunk)
-    return {"offset": offset + received, "received": received}
+    name, repo, tag, parts_json, total = row
+    parts = json.loads(parts_json or "[]")
+    have = sum(p["size"] for p in parts)
+    if offset != have:
+        raise HTTPException(409, f"offset mismatch: have {have}")
+    if have >= total:
+        return {"offset": have, "done": True}
+    data = b""
+    async for chunk in request.stream():
+        data += chunk
+        if len(data) > 90 * 1024 * 1024:
+            raise HTTPException(413, "chunk too large (max 90 MB)")
+    if not data:
+        raise HTTPException(400, "empty chunk")
+    data = data[: total - have]
+    if not data:
+        return {"offset": have, "done": True}
+    release_id = ensure_release(tag, repo)
+    pname = f"{name}.p{len(parts):03d}"
+    r = _gh.post(
+        f"https://uploads.github.com/repos/{repo}/releases/{release_id}/assets?name={quote(pname)}",
+        headers={**GH, "Content-Type": "application/octet-stream"},
+        content=data,
+    )
+    r.raise_for_status()
+    parts.append({"url": r.json()["browser_download_url"], "size": len(data)})
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("UPDATE files SET parts_json = %s, size = %s WHERE id = %s",
+                (json.dumps(parts), have + len(data), fid))
+    conn.commit()
+    cur.close()
+    conn.close()
+    return {"offset": have + len(data), "received": len(data)}
 
 
 @app.post("/v1/upload/complete/{fid}")
-async def upload_complete(fid: str, background: BackgroundTasks, x_api_key: str = Header("")):
-    """Finalize a chunked upload in the background; returns immediately.
-
-    The heavy work (hash + release-asset parts) exceeds the edge timeout, so
-    the client should poll GET /v1/file/{fid} for status='ready'.
-    """
+async def upload_complete(fid: str, x_api_key: str = Header("")):
+    """Finalize a chunked upload. All parts are already durable, so this is
+    instant — just flip the row to ready."""
     check_key(x_api_key, need="upload", mutating=True)
-    path = os.path.join(BUFFER_DIR, f"{fid}.up")
-    meta_path = os.path.join(BUFFER_DIR, f"{fid}.meta")
-    if not os.path.exists(path) or not os.path.exists(meta_path):
-        conn = db()
-        cur = conn.cursor()
-        cur.execute("SELECT status FROM files WHERE id = %s", (fid,))
-        row = cur.fetchone()
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("SELECT name, parts_json, size FROM files WHERE id = %s AND store = 'pool'", (fid,))
+    row = cur.fetchone()
+    if not row:
         cur.close()
         conn.close()
-        if row:
-            return {"id": fid, "status": row[0], "note": "already finalized"}
         raise HTTPException(404, "upload session not found")
-    with open(meta_path) as fh:
-        meta = json.load(fh)
-    if os.path.getsize(path) != meta["total_size"]:
-        raise HTTPException(400, f"incomplete upload: {os.path.getsize(path)}/{meta['total_size']}")
-    background.add_task(finalize_upload, meta["name"], meta["mime"], path, None, fid,
-                        meta.get("private", False), meta.get("enc", False))
-    return {"id": fid, "status": "processing", "note": "finalizing in background; poll /v1/file/{id}"}
+    name, parts_json, total = row
+    parts = json.loads(parts_json or "[]")
+    have = sum(p["size"] for p in parts)
+    if have < total:
+        cur.close()
+        conn.close()
+        raise HTTPException(400, f"incomplete upload: {have}/{total}")
+    cur.execute("UPDATE files SET status = 'ready', url = %s, sha = %s WHERE id = %s",
+                (f"/v1/download/{fid}", f"pool-{fid}-{name}", fid))
+    conn.commit()
+    cur.close()
+    conn.close()
+    return {"id": fid, "status": "ready", "parts": len(parts), "size": total}
 
 
 @app.get("/v1/file/{file_id}")
@@ -869,6 +930,9 @@ def delete_file(file_id: str, x_api_key: str = Header("")):
         return {"deleted": True, "note": "pool parts removed; disk copy pruned at next carousel check-in"}
     else:
         release_delete(name, tag, repo)
+    # jobs.target_id has an FK to files(id) — drop any pipeline jobs for this
+    # file (queued or finished) or the delete would 500.
+    cur.execute("DELETE FROM jobs WHERE target_id = %s", (file_id,))
     cur.execute("DELETE FROM files WHERE id = %s", (file_id,))
     conn.commit()
     cur.close()

@@ -329,7 +329,8 @@ const WF_INFO = {
   "cache-backup":  ["💾","Backup cache","Extra mirror for hot files."],
   "supervisor":    ["🛰️","Node watchguard","Restarts any dead pool node."],
 };
-const STATUS_LABEL = {ready:"Ready", buffered:"Buffering", compressing:"Compressing", compressed:"Compressed",
+const STATUS_LABEL = {ready:"Ready", buffered:"Buffering", uploading:"Uploading", failed:"Failed",
+                      compressing:"Compressing", compressed:"Compressed",
                       processing:"Processing", deleted:"Deleted", queued:"Queued"};
 const STORE_LABEL = {git:"small", release:"medium", archive:"archive", pool:"big file"};
 
@@ -857,7 +858,7 @@ async function pump(){
 
 async function uploadOne(it){
   const enc = !!encMaster;
-  const fid = enc ? genFid() : null;
+  const fid = genFid();
 
   if(it.file.size <= SMALL_MAX){
     // ---- single request ----
@@ -900,64 +901,101 @@ async function uploadOne(it){
     return;
   }
 
-  // ---- chunked ----
+  // ---- chunked (durable parts: every acked chunk survives restarts) ----
   const qs = new URLSearchParams({name: it.file.name, total_size: it.file.size, mime: it.file.type || "", private: uploadPrivate});
-  if(enc){ qs.set("enc", "true"); qs.set("fid", fid); }
-  let fidFinal = fid;
-  try {
-    const d = await tryFetch(base + "/v1/upload/start?" + qs, {method:"POST", headers: headers()});
-    fidFinal = d.id;
-  } catch(e){ throw new Error("upload start failed: " + e.message); }
+  qs.set("fid", fid);
+  if(enc) qs.set("enc", "true");
+  const startUrl = base + "/v1/upload/start?" + qs;
+  async function restartSession(){
+    const d = await tryFetch(startUrl, {method:"POST", headers: headers()});
+    return d.offset || 0;
+  }
+  let serverOff = 0;
+  try { serverOff = await restartSession(); }
+  catch(e){ throw new Error("upload start failed: " + e.message); }
   if(it.cancelled) return;
-
-  let off = 0, cOff = 0, cidx = 0;
+  if(serverOff > 0 && serverOff < it.total){
+    it.err = "resuming from " + fmtBytes(serverOff) + "…";
+    it.bytes = serverOff; it.pct = serverOff / it.total * 100;
+    renderQueue();
+  }
+  let chunkCipher = enc ? null : CHUNK;   // ciphertext size of one full chunk
+  let off = enc ? Math.floor(serverOff / (chunkCipher || 1)) * CHUNK : serverOff;
+  off = Math.min(off, it.file.size);
   while(off < it.file.size){
     if(it.cancelled) return;
     const slice = it.file.slice(off, Math.min(off + CHUNK, it.file.size));
     let chunk = slice;
     if(enc){
       it.state = "encrypting"; renderQueue();
-      const e = await encryptSlice(slice, fidFinal, cidx, off === 0, (p) => {
-        it.bytes = off; it.pct = (off + p * slice.size) / it.total * 100; renderQueue();
+      const e = await encryptSlice(slice, fid, off / CHUNK, off === 0, (p) => {
+        it.bytes = off + p * slice.size;
+        it.pct = (off + p * slice.size) / it.total * 100; renderQueue();
       });
-      chunk = e.blob; cidx = e.nextIdx;
+      chunk = e.blob;
+      if(chunkCipher === null) chunkCipher = chunk.size;
       it.state = "uploading"; renderQueue();
     }
-    const url = base + "/v1/upload/chunk/" + fidFinal + "?offset=" + cOff;
-    let lastErr = null, lastStatus = 0;
-    for(let attempt = 0; attempt <= MAX_RETRIES; attempt++){
+    if(it.cancelled) return;
+    const url = base + "/v1/upload/chunk/" + fid + "?offset=" + serverOff;
+    let lastErr = null, recovered = false;
+    for(let attempt = 0; attempt <= MAX_RETRIES + 3; attempt++){
       if(it.cancelled) return;
       try {
         await xhrPost(url, chunk, headers(), it, loaded => {
-          it.bytes = cOff + loaded;
-          it.pct = Math.max(it.pct, (cOff + loaded) / it.total * 100);
+          it.bytes = serverOff + loaded;
+          it.pct = Math.max(it.pct, (serverOff + loaded) / it.total * 100);
           updateItem(it);
         });
-        break;
+        lastErr = null; break;
       } catch(e){
         if(e.cancelled) return;
-        lastErr = e; lastStatus = e.status || 0;
-        if(lastStatus === 409 && e.detail && e.detail.indexOf("offset mismatch") === 0){
-          const exp = parseInt(e.detail.split(" ").pop(), 10) || cOff;
-          if(exp > cOff){ off = exp; cOff = exp; }
+        lastErr = e; const st = e.status || 0;
+        if(st === 409 && e.detail && e.detail.indexOf("offset mismatch") === 0){
+          // server has more than we thought (lost ack, or resume) — jump ahead
+          const n = parseInt(e.detail.split(" ").pop(), 10) || serverOff;
+          if(n > serverOff){
+            serverOff = n;
+            off = enc ? Math.floor(n / (chunkCipher || 1)) * CHUNK : n;
+            off = Math.min(off, it.file.size);
+          }
+          recovered = true; break;
+        }
+        if(st === 404 || st === 0 || st >= 500){
+          // session lost (service restarted) or tunnel hiccup — reopen the
+          // session and continue from its durable offset. No data is lost:
+          // acked chunks live as release parts.
+          recovered = true;
+          it.err = "connection lost — reconnecting…"; renderQueue();
+          await sleep(2000 * (attempt + 1));
+          try {
+            const so = await restartSession();
+            if(so >= it.total){ off = it.total; break; }
+            if(so !== serverOff){
+              serverOff = so;
+              off = enc ? Math.floor(so / (chunkCipher || 1)) * CHUNK : so;
+              off = Math.min(off, it.file.size);
+            }
+          } catch(e2){}
           break;
         }
-        if(attempt < MAX_RETRIES){
-          it.err = "retrying (" + (attempt+1) + "/" + MAX_RETRIES + ")…";
-          renderQueue();
+        if(attempt < MAX_RETRIES + 3){
+          it.err = "retrying (" + (attempt+1) + "/" + (MAX_RETRIES + 3) + ")…"; renderQueue();
           await sleep(1500 * (attempt + 1));
         }
       }
     }
-    if(lastErr && !(lastStatus === 409)) throw lastErr;
+    if(lastErr && !recovered) throw lastErr;
+    if(off >= it.file.size) break;
+    if(recovered) continue;           // offset moved — recompute the chunk
+    serverOff += chunk.size;
     off += slice.size;
-    cOff += chunk.size;
   }
   if(it.cancelled) return;
 
   // ---- finalize ----
   it.state = "finalizing"; it.bytes = it.total; it.pct = 100; renderQueue();
-  try { await tryFetch(base + "/v1/upload/complete/" + fidFinal, {method:"POST", headers: headers()}); }
+  try { await tryFetch(base + "/v1/upload/complete/" + fid, {method:"POST", headers: headers()}); }
   catch(e){ throw new Error("finalize failed: " + e.message); }
   it.state = "done"; it.done = true; renderQueue();
   toast("Uploaded ✔ " + it.file.name + " — finalizing on the server.", 5000);
