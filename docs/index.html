@@ -217,14 +217,17 @@
 <body>
 <div class="gate" id="gate">
   <div class="gatecard">
-    <div class="lock">🔒</div>
-    <h2>GitDrive is locked</h2>
-    <p>This is your private dashboard. Enter your API key to open it — optionally set a master password to enable end-to-end encryption for new uploads.</p>
+    <div class="lock" id="gateLock">🔒</div>
+    <h2 id="gateTitle">GitDrive is locked</h2>
+    <p id="gateMsg">This is your private dashboard. Enter your API key to open it — optionally set a master password to enable end-to-end encryption for new uploads.</p>
     <input type="password" id="gateKey" placeholder="API key" autocomplete="off">
     <input type="password" id="gatePass" placeholder="Master password (optional — enables E2E encryption)" autocomplete="new-password">
     <div class="gatebad" id="gateErr"></div>
-    <div class="rowbtn"><button class="primary" onclick="unlock()">Unlock</button></div>
-    <div class="hintline">Encrypted files (🔐) are encrypted in your browser before upload (AES-256-GCM). <b>Never lose the master password — it can't be recovered.</b> Keys live only in this tab.</div>
+    <div class="rowbtn">
+      <button class="primary" onclick="unlock()">Unlock</button>
+      <button id="gateCancel" style="display:none" onclick="closeGate()">Cancel</button>
+    </div>
+    <div class="hintline" id="gateHint">Encrypted files (🔐) are encrypted in your browser before upload (AES-256-GCM). <b>Never lose the master password — it can't be recovered.</b> Keys live only in this tab.</div>
   </div>
 </div>
 
@@ -235,7 +238,7 @@
     <div class="statusline">
       <span id="updated">connecting…</span>
       <span class="pill ok" id="livePill">connecting</span>
-      <span class="lockpill" id="lockPill" style="display:none" onclick="lockE2E()" title="Clears encryption keys from this tab">🔐 E2E unlocked</span>
+      <span class="lockpill" id="lockPill" onclick="toggleEnc()" title="Unlock or clear end-to-end encryption keys for this tab">🔐 Unlock E2E</span>
     </div>
   </div>
 </header>
@@ -400,6 +403,7 @@ async function decryptStream(res, fileId){
 }
 
 // ============================== access gate ==============================
+let gateMode = "login";
 function unlock(){
   const key = document.getElementById("gateKey").value.trim();
   const pass = document.getElementById("gatePass").value;
@@ -409,8 +413,9 @@ function unlock(){
   if(pass){
     deriveMaster(pass).then(k => {
       encMaster = k;
-      document.getElementById("lockPill").style.display = "";
+      document.getElementById("lockPill").textContent = "🔐 E2E unlocked";
       document.getElementById("gate").style.display = "none";
+      document.getElementById("gatePass").value = "";
       toast("🔐 Encryption unlocked — new uploads will be encrypted.", 6000);
       refresh();
     }).catch(e => { document.getElementById("gateErr").textContent = "Key derivation failed: " + e.message; });
@@ -419,11 +424,16 @@ function unlock(){
   document.getElementById("gate").style.display = "none";
   refresh();
 }
-function lockE2E(){
-  encMaster = null;
-  document.getElementById("lockPill").style.display = "none";
-  toast("Encryption keys cleared from this tab. Encrypted downloads are locked until you unlock again.", 6000);
+function toggleEnc(){
+  if(encMaster){
+    encMaster = null;
+    document.getElementById("lockPill").textContent = "🔐 Unlock E2E";
+    toast("Encryption keys cleared from this tab. Encrypted downloads are locked until you unlock again.", 6000);
+    return;
+  }
+  showGate("", "enc");
 }
+function closeGate(){ document.getElementById("gate").style.display = "none"; }
 ["gateKey","gatePass"].forEach(id => document.getElementById(id).addEventListener("keydown", e => { if(e.key === "Enter") unlock(); }));
 
 // ============================== base utils ==============================
@@ -441,9 +451,24 @@ async function tryFetch(url, opts){
   return res.json();
 }
 function headers(){ return {"X-API-Key": localStorage.getItem(LS_KEY) || ""}; }
-function showGate(err){
+function showGate(err, mode){
+  gateMode = mode || "login";
+  const enc = gateMode === "enc";
   document.getElementById("gateErr").textContent = err || "";
+  document.getElementById("gateKey").style.display = enc ? "none" : "";
+  document.getElementById("gateCancel").style.display = enc ? "" : "none";
+  document.getElementById("gateLock").textContent = enc ? "🔐" : "🔒";
+  document.getElementById("gateTitle").textContent = enc ? "Unlock encryption" : "GitDrive is locked";
+  document.getElementById("gateMsg").textContent = enc
+    ? "Enter your master password to unlock end-to-end encryption in this tab. Encrypted files need it for every session — it's never stored."
+    : "This is your private dashboard. Enter your API key to open it — optionally set a master password to enable end-to-end encryption for new uploads.";
+  document.getElementById("gateHint").style.display = enc ? "none" : "";
+  document.getElementById("gatePass").placeholder = enc
+    ? "Master password"
+    : "Master password (optional — enables E2E encryption)";
+  document.getElementById("gatePass").value = "";
   document.getElementById("gate").style.display = "flex";
+  document.getElementById(enc ? "gatePass" : "gateKey").focus();
 }
 async function fetchDash(u){
   const res = await fetch(u + "/v1/dashboard", {headers: headers()});
@@ -987,7 +1012,11 @@ document.querySelectorAll(".chipbtn").forEach(btn => btn.addEventListener("click
   lastData && renderFiles(lastData.files);
 }));
 
-showGate(""); // locked until you unlock with your API key (and optional master password)
+if(localStorage.getItem(LS_KEY)){
+  document.getElementById("gate").style.display = "none";
+}else{
+  showGate(""); // first visit — no API key saved yet
+}
 
 setInterval(() => { if(!document.hidden) refresh(); }, 30000);
 setInterval(() => {
