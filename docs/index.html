@@ -102,6 +102,8 @@
   .drop .dmain{font-size:14.5px;font-weight:650;color:var(--dim)}
   .drop.over .dmain,.drop:hover .dmain{color:var(--txt)}
   .drop .dsub{font-size:12px;margin-top:3px}
+  .drop .dsname{font-weight:650;font-size:13.5px;color:var(--txt);word-break:break-all}
+  .drop .dssub{font-size:12px;color:var(--faint)}
   #queue{margin-top:14px;display:flex;flex-direction:column;gap:10px}
   .uq{background:var(--panel2);border:1px solid var(--line);border-radius:var(--r-md);padding:12px 14px}
   .uqtop{display:flex;align-items:center;gap:10px;margin-bottom:8px}
@@ -265,6 +267,11 @@
       <span class="dicon">⬆️</span>
       <span class="dmain">Drop files here or click to choose</span>
       <span class="dsub">Multiple files supported — they upload one after another</span>
+      <div id="dropStatus" style="display:none;width:100%;text-align:left">
+        <div class="dsname" id="dsName"></div>
+        <div class="pbar" style="margin:8px 0 6px"><div class="pfill" id="dsFill"></div></div>
+        <div class="dssub" id="dsSub"></div>
+      </div>
     </div>
     <input type="file" id="fileInput" multiple hidden>
     <div id="queue"></div>
@@ -335,7 +342,7 @@ const STATUS_LABEL = {ready:"Ready", buffered:"Buffering", uploading:"Uploading"
 const STORE_LABEL = {git:"small", release:"medium", archive:"archive", pool:"big file"};
 
 // ============================== E2E encryption (all client-side) ==============================
-let encMaster = null;            // raw 32-byte master key — lives only in this tab
+let encMaster = null;            // raw 32-byte master key — persisted in this browser
 const ECHUNK = 1024 * 1024;
 const ENCMAGIC = new Uint8Array([0x47,0x44,0x45,0x4e,0x43,0x31]); // "GDENC1"
 
@@ -414,6 +421,7 @@ function unlock(){
   if(pass){
     deriveMaster(pass).then(k => {
       encMaster = k;
+      localStorage.setItem("gd_enc_master", b64(k));
       document.getElementById("lockPill").textContent = "🔐 E2E unlocked";
       document.getElementById("gate").style.display = "none";
       document.getElementById("gatePass").value = "";
@@ -428,6 +436,7 @@ function unlock(){
 function toggleEnc(){
   if(encMaster){
     encMaster = null;
+    localStorage.removeItem("gd_enc_master");
     document.getElementById("lockPill").textContent = "🔐 Unlock E2E";
     toast("Encryption keys cleared from this tab. Encrypted downloads are locked until you unlock again.", 6000);
     return;
@@ -747,7 +756,7 @@ async function dispatch(name){
 const CHUNK = 64 * 1024 * 1024;      // 64 MB per part — under the tunnel's 100 MB cap
 const SMALL_MAX = 90 * 1024 * 1024;
 const MAX_RETRIES = 3;
-let queue = [], pumping = false, seq = 0;
+let queue = [], pumping = false, seq = 0, active = null;
 
 function xhrPost(url, body, headersMap, item, onProgress){
   return new Promise((resolve, reject) => {
@@ -789,8 +798,9 @@ function cancelUpload(item){
 
 function renderQueue(){
   const box = document.getElementById("queue");
-  if(!queue.length){ box.innerHTML = ""; return; }
-  box.innerHTML = queue.map(it => {
+  const items = active ? [active, ...queue] : queue;
+  if(!items.length){ box.innerHTML = ""; renderDropStatus(null); return; }
+  box.innerHTML = items.map(it => {
     const st = it.state;
     const statCls = st === "done" ? "ok" : st === "error" || st === "cancelled" ? "bad" : st === "finalizing" ? "dim" : "warn";
     const statTxt = st === "queued" ? "Waiting…"
@@ -818,9 +828,27 @@ function renderQueue(){
       </div>
     </div>`;
   }).join("");
+  renderDropStatus(active);
+}
+function renderDropStatus(it){
+  const ds = document.getElementById("dropStatus");
+  if(!ds) return;
+  const live = it && !it.cancelled && (it.state === "queued" || it.state === "encrypting" || it.state === "uploading" || it.state === "finalizing" || it.state === "error");
+  const dz = document.getElementById("drop");
+  for(const el of dz.querySelectorAll(".dicon, .dmain, .dsub")) el.style.display = live ? "none" : "";
+  ds.style.display = live ? "block" : "none";
+  if(!live) return;
+  document.getElementById("dsName").textContent = it.file.name;
+  document.getElementById("dsFill").style.width = Math.min(100, it.pct) + "%";
+  document.getElementById("dsSub").textContent =
+    it.state === "encrypting" ? "Encrypting… " + Math.round(it.pct) + "% · AES-256 on this device"
+    : it.state === "finalizing" ? "Finalizing on server…"
+    : it.state === "queued" ? "Waiting…"
+    : it.state === "error" ? "Failed — " + (it.err || "")
+    : (it.err ? it.err + " · " : "") + Math.round(it.pct) + "% · " + fmtBytes(it.bytes) + " / " + fmtBytes(it.total) + " · " + fmtSpeed(it.speed) + (it.eta ? " · " + it.eta : "");
 }
 function cancelUploadByIdx(idx){
-  const it = queue.find(x => x.idx === idx);
+  const it = queue.find(x => x.idx === idx) || (active && active.idx === idx ? active : null);
   if(it) cancelUpload(it);
 }
 function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
@@ -842,6 +870,7 @@ async function pump(){
   pumping = true;
   while(queue.length){
     const it = queue.shift();
+    active = it;
     renderQueue();
     if(it.cancelled) continue;
     try { await uploadOne(it); }
@@ -849,10 +878,12 @@ async function pump(){
     if(it.done){
       setTimeout(() => {
         queue = queue.filter(x => x.idx !== it.idx);
+        if(active && active.idx === it.idx) active = null;
         renderQueue();
       }, 4000);
     }
   }
+  if(active && !active.done) active = null;
   pumping = false;
 }
 
@@ -1005,7 +1036,7 @@ async function uploadOne(it){
     for(let i = 0; i < 120; i++){
       await sleep(5000);
       try {
-        const f = await tryFetch(base + "/v1/file/" + fidFinal, {headers: headers()});
+        const f = await tryFetch(base + "/v1/file/" + fid, {headers: headers()});
         if(f.status === "ready"){ refresh(); return; }
       } catch(e){ return; }
     }
@@ -1049,6 +1080,20 @@ document.querySelectorAll(".chipbtn").forEach(btn => btn.addEventListener("click
   fFilter = btn.dataset.f;
   lastData && renderFiles(lastData.files);
 }));
+
+const savedMaster = localStorage.getItem("gd_enc_master");
+if(savedMaster){
+  try {
+    const k = unb64(savedMaster);
+    if(k.length === 32){
+      encMaster = k;
+      document.getElementById("lockPill").textContent = "🔐 E2E unlocked";
+      setTimeout(() => toast("🔐 E2E unlocked — remembered from this browser.", 5000), 1200);
+    } else {
+      localStorage.removeItem("gd_enc_master");
+    }
+  } catch(e){ localStorage.removeItem("gd_enc_master"); }
+}
 
 if(localStorage.getItem(LS_KEY)){
   document.getElementById("gate").style.display = "none";
