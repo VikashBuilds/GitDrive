@@ -687,17 +687,18 @@ async function downloadFile(id){
   const BIG = 1024 * 1024 * 1024;
   if(f.size >= BIG && "showSaveFilePicker" in window){
     try {
+      const handle = await window.showSaveFilePicker({suggestedName: f.name});
       const res = await fetch(base + "/v1/download/" + id, {headers: headers()});
       if(!res.ok) throw new Error("HTTP " + res.status);
-      const handle = await window.showSaveFilePicker({suggestedName: f.name});
       const writable = await handle.createWritable();
       await res.body.pipeTo(writable);
       await writable.close();
       toast("Saved to disk \u2714 " + f.name, 5000);
       return;
     } catch(e){
-      // dialog dismissed, pipe error, or aborted — fall through to <a> fallback
-      if(e.name !== "AbortError") console.warn("FS Access download fell back:", e.message);
+      // picker cancelled, pipe error, or aborted — handle gracefully
+      if(e.name === "AbortError"){ toast("Download cancelled.", 2500); return; }
+      console.warn("FS Access download fell back:", e.message);
     }
   }
   if(f.size >= BIG){
@@ -723,14 +724,21 @@ async function downloadFile(id){
 }
 async function downloadEncrypted(f){
   const total = f.size || 0;
-  const showDl = showSaveFilePicker && total >= 512 * 1024 * 1024;
-  if(showDl) showDlStatus(true, "Decrypting & saving " + f.name + "…", 0, "");
+  let handle = null;
+  if(showSaveFilePicker && total >= 512 * 1024 * 1024){
+    try {
+      // must open the picker inside the user gesture — BEFORE any await
+      handle = await window.showSaveFilePicker({suggestedName: f.name});
+    } catch(e){
+      if(e.name === "AbortError"){ toast("Download cancelled.", 2500); return; }
+      console.warn("FS Access unavailable, using blob fallback:", e.message);
+    }
+  }
+  if(handle) showDlStatus(true, "Decrypting & saving " + f.name + "…", 0, "");
   try {
     const res = await fetch(base + "/v1/download/" + f.id, {headers: headers()});
     if(!res.ok) throw new Error("HTTP " + res.status + (res.status === 401 ? " (bad API key?)" : ""));
-    const ctLen = parseInt(res.headers.get("content-length") || "0", 10) || 0;
-    if(showDl){
-      const handle = await window.showSaveFilePicker({suggestedName: f.name});
+    if(handle){
       const writable = await handle.createWritable();
       let plain = 0;
       for await (const chunk of decryptChunks(res, f.id)){
@@ -752,7 +760,7 @@ async function downloadEncrypted(f){
     setTimeout(() => URL.revokeObjectURL(a.href), 30000);
     toast("Downloaded & decrypted ✔ " + f.name, 5000);
   } catch(e){
-    if(showDl) showDlStatus(false);
+    if(handle) showDlStatus(false);
     if(e.name === "AbortError"){ toast("Download cancelled.", 3000); return; }
     toast("Download failed: " + e.message, 6000);
   }
