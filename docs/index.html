@@ -353,7 +353,7 @@ const ENCMAGIC = new Uint8Array([0x47,0x44,0x45,0x4e,0x43,0x31]); // "GDENC1"
 function genFid(){ return Array.from(crypto.getRandomValues(new Uint8Array(6)), b => b.toString(16).padStart(2,"0")).join(""); }
 function b64(b){ return btoa(String.fromCharCode(...b)); }
 function unb64(s){ return Uint8Array.from(atob(s), c => c.charCodeAt(0)); }
-function concat(a, b){ const c = new Uint8Array(a.length + b.length); c.set(a); c.set(b); return c; }
+function concat(a, b){ const c = new Uint8Array(a.length + b.length); c.set(a); c.set(b, a.length); return c; }
 function encIv(idx){ const iv = new Uint8Array(12); new DataView(iv.buffer).setUint32(8, idx, false); return iv; }
 
 async function deriveMaster(password){
@@ -396,8 +396,8 @@ async function* decryptChunks(res, fileId){
   if(!head) throw new Error("empty response");
   for(let i = 0; i < ENCMAGIC.length; i++) if(head[i] !== ENCMAGIC[i]) throw new Error("not a GitDrive-encrypted file");
   const chunkLen = new DataView(head.buffer, head.byteOffset, head.byteLength).getUint32(6, true);
-  let idx = 0, carry = head.subarray(10);
   const want = chunkLen + 16;
+  let idx = 0, carry = head.subarray(10);
   while(true){
     if(carry.length >= want){
       const ct = carry.subarray(0, want);
@@ -410,7 +410,13 @@ async function* decryptChunks(res, fileId){
     if(done) break;
     carry = concat(carry, value);
   }
-  if(carry.length) throw new Error("truncated encrypted stream");
+  if(carry.length){
+    // Trailing partial block (file size not an exact multiple of ECHUNK).
+    // A wrong key or truncated stream still fails here via the GCM auth tag.
+    const plain = await crypto.subtle.decrypt({name:"AES-GCM", iv: encIv(idx)}, key, carry);
+    idx++;
+    yield plain;
+  }
 }
 async function decryptStream(res, fileId){
   const out = [];
