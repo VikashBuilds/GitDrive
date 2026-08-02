@@ -828,8 +828,8 @@ async def upload_chunk(fid: str, offset: int, request: Request, x_api_key: str =
     parts.append({"url": r.json()["browser_download_url"], "size": len(data)})
     conn = db()
     cur = conn.cursor()
-    cur.execute("UPDATE files SET parts_json = %s, size = %s WHERE id = %s",
-                (json.dumps(parts), have + len(data), fid))
+    cur.execute("UPDATE files SET parts_json = %s WHERE id = %s",
+                (json.dumps(parts), fid))
     conn.commit()
     cur.close()
     conn.close()
