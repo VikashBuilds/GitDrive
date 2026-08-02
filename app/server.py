@@ -443,7 +443,7 @@ def _download_private(store: str, name: str, repo: str, tag: str, path: str,
 
 
 @app.get("/v1/download/{file_id}")
-async def download(file_id: str, x_api_key: str = Header(""), key: str = ""):
+async def download(file_id: str, part: int | None = None, x_api_key: str = Header(""), key: str = ""):
     """Stream any file. Archives are concatenated from their release parts.
 
     Downloads require a valid API key for every file (public included) â€”
@@ -476,6 +476,30 @@ async def download(file_id: str, x_api_key: str = Header(""), key: str = ""):
     conn.close()
     if status == "deleted":
         raise HTTPException(410, "file deleted")
+
+    # Single-part download: lets the client fetch parts one at a time with
+    # retries, so a service handover (every ~6 h) only kills one short
+    # request instead of a multi-GB stream.
+    if part is not None and not private:
+        parts = json.loads(parts_json or "[]")
+        if not parts or not (0 <= part < len(parts)):
+            raise HTTPException(404, "no such part")
+        p = parts[part]
+
+        async def gen_one():
+            async with _gh_async.stream("GET", p["url"]) as r:
+                r.raise_for_status()
+                async for chunk in r.aiter_bytes(1024 * 256):
+                    yield chunk
+
+        return StreamingResponse(
+            gen_one(),
+            media_type="application/octet-stream",
+            headers={
+                "Content-Length": str(p["size"]),
+                "Content-Disposition": f'attachment; filename="{name}"',
+            },
+        )
 
     def gen_parts(parts):
         async def gen():
@@ -817,6 +841,23 @@ async def upload_complete(fid: str, x_api_key: str = Header("")):
     cur.close()
     conn.close()
     return {"id": fid, "status": "ready", "parts": len(parts), "size": total}
+
+
+@app.get("/v1/file/{file_id}/parts")
+def file_parts(file_id: str, x_api_key: str = Header("")):
+    """Part sizes for a chunked file, so the client can download parts one at
+    a time (with retries) and show accurate progress."""
+    check_key(x_api_key)
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("SELECT parts_json FROM files WHERE id = %s", (file_id,))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    if not row:
+        raise HTTPException(404, "not found")
+    parts = json.loads(row[0] or "[]")
+    return {"sizes": [p["size"] for p in parts], "count": len(parts)}
 
 
 @app.get("/v1/file/{file_id}")

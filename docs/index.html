@@ -686,6 +686,61 @@ function renderFiles(files){
 function fileById(id){ return (lastData.files || []).find(x => x.id === id); }
 
 // ============================== downloads ==============================
+async function fetchParts(id){
+  try {
+    const res = await fetch(base + "/v1/file/" + id + "/parts", {headers: headers()});
+    if(!res.ok) return null;
+    const d = await res.json();
+    return (d.sizes && d.sizes.length) ? d.sizes : null;
+  } catch(e){ return null; }
+}
+// Download a chunked file part-by-part with retries. A failed part only
+// restarts that part (service handovers every ~6 h kill single requests,
+// not the whole download). For encrypted files, parts are block-aligned so
+// decryption carries across part boundaries.
+async function streamParts(f, handle, sizes, enc, key, cb){
+  const want = ECHUNK + 16;
+  const total = f.size || 0;
+  const writable = await handle.createWritable();
+  let done = 0, idx = 0, leftover = enc ? new Uint8Array(0) : null;
+  const n = sizes.length;
+  for(let i = 0; i < n; i++){
+    let buf = null;
+    for(let attempt = 1; ; attempt++){
+      try {
+        const res = await fetch(base + "/v1/download/" + f.id + "?part=" + i, {headers: headers()});
+        if(!res.ok) throw new Error("HTTP " + res.status);
+        buf = new Uint8Array(await res.arrayBuffer());
+        break;
+      } catch(e){
+        if(attempt >= 4) throw e;
+        cb("Retrying part " + (i + 1) + "/" + n + " (" + attempt + ")…");
+        await sleep(2000 * attempt);
+      }
+    }
+    if(enc){
+      let data = i === 0 ? buf.subarray(10) : buf;   // strip the 10-byte header once
+      data = leftover.length ? concat(leftover, data) : data;
+      while(data.length >= want){
+        const plain = await crypto.subtle.decrypt({name:"AES-GCM", iv: encIv(idx)}, key, data.subarray(0, want));
+        await writable.write(plain);
+        idx++; done += plain.byteLength; data = data.subarray(want);
+        cb(null, Math.min(100, done / total * 100), fmtBytes(done) + " / " + fmtBytes(total) + " decrypted");
+      }
+      leftover = data;
+    } else {
+      await writable.write(buf);
+      done += buf.length;
+      cb(null, Math.min(100, done / total * 100), fmtBytes(done) + " / " + fmtBytes(total));
+    }
+  }
+  if(enc && leftover.length){
+    const plain = await crypto.subtle.decrypt({name:"AES-GCM", iv: encIv(idx)}, key, leftover);
+    await writable.write(plain);
+    done += plain.byteLength;
+  }
+  await writable.close();
+}
 async function downloadFile(id){
   const f = fileById(id);
   if(!f) return;
@@ -695,6 +750,12 @@ async function downloadFile(id){
   if(f.size >= BIG && "showSaveFilePicker" in window){
     try {
       const handle = await window.showSaveFilePicker({suggestedName: f.name});
+      const sizes = await fetchParts(f.id);
+      if(sizes){
+        await streamParts(f, handle, sizes, false, null, () => {});
+        toast("Saved to disk \u2714 " + f.name, 5000);
+        return;
+      }
       const res = await fetch(base + "/v1/download/" + id, {headers: headers()});
       if(!res.ok) throw new Error("HTTP " + res.status);
       const writable = await handle.createWritable();
@@ -743,6 +804,17 @@ async function downloadEncrypted(f){
   }
   if(handle) showDlStatus(true, "Decrypting & saving " + f.name + "…", 0, "");
   try {
+    const sizes = await fetchParts(f.id);
+    if(handle && sizes){
+      const key = await fileKey(f.id);
+      await streamParts(f, handle, sizes, true, key, (msg, pct, sub) => {
+        if(msg){ showDlStatus(true, msg, 0, ""); }
+        else showDlStatus(true, "Decrypting & saving " + f.name + "…", pct || 0, sub || "");
+      });
+      showDlStatus(false);
+      toast("Saved to disk ✔ " + f.name, 5000);
+      return;
+    }
     const res = await fetch(base + "/v1/download/" + f.id, {headers: headers()});
     if(!res.ok) throw new Error("HTTP " + res.status + (res.status === 401 ? " (bad API key?)" : ""));
     if(handle){
