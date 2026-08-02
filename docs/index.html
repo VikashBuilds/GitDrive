@@ -688,9 +688,12 @@ async function downloadFile(id){
       const writable = await handle.createWritable();
       await res.body.pipeTo(writable);
       await writable.close();
-      toast("Saved to disk ✔ " + f.name, 5000);
-    } catch(e){ toast("Download failed: " + e.message, 6000); }
-    return;
+      toast("Saved to disk \u2714 " + f.name, 5000);
+      return;
+    } catch(e){
+      // dialog dismissed, pipe error, or aborted — fall through to <a> fallback
+      if(e.name !== "AbortError") console.warn("FS Access download fell back:", e.message);
+    }
   }
   if(f.size >= BIG){
     const apiKey = localStorage.getItem(LS_KEY) || "";
