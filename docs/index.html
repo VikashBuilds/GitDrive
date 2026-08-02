@@ -631,7 +631,8 @@ function renderWorkers(d){
 let fFilter = "all", fSort = "new";
 function renderFiles(files){
   const q = (document.getElementById("search").value || "").toLowerCase();
-  let list = files.filter(f => f.name.toLowerCase().includes(q));
+  // In-flight uploads are shown in the dropzone status box, not the file list.
+  let list = files.filter(f => f.status !== "uploading").filter(f => f.name.toLowerCase().includes(q));
   if(fFilter === "pub") list = list.filter(f => !f.private && !f.enc);
   if(fFilter === "priv") list = list.filter(f => f.private && !f.enc);
   if(fFilter === "enc") list = list.filter(f => f.enc);
@@ -846,8 +847,10 @@ function cancelUpload(item){
 
 function renderQueue(){
   const box = document.getElementById("queue");
-  const items = active ? [active, ...queue] : queue;
-  if(!items.length){ box.innerHTML = ""; renderDropStatus(null); return; }
+  // The in-flight item lives in the dropzone status box (renderDropStatus),
+  // so don't duplicate it here — the queue shows only what's waiting.
+  const items = queue;
+  if(!items.length){ box.innerHTML = ""; renderDropStatus(active); return; }
   box.innerHTML = items.map(it => {
     const st = it.state;
     const statCls = st === "done" ? "ok" : st === "error" || st === "cancelled" ? "bad" : st === "finalizing" ? "dim" : "warn";
