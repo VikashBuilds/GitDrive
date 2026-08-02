@@ -1,7 +1,8 @@
 """Chunked uploader for GitDrive — bypasses the 100 MB Cloudflare edge cap.
 
-Works for any file size up to the pool limit (12 GB default). Sends the file
-in small chunks (default 64 MB) through a resumable session:
+Works for any file size up to 14 GB. Files over 2 GB are stored as release
+parts and re-assembled on download. Sends the file in small chunks (default
+64 MB) through a resumable session:
 
   /v1/upload/start   -> {id, total_size}
   /v1/upload/chunk/{id}?offset=N   (raw body)
@@ -83,7 +84,7 @@ def main():
             if r.status_code == 200:
                 result = r.json()
                 print(f"[chunk] FINAL: id={result['id']} size={result['size'] / (1024**3):.2f} GB "
-                      f"status={result['status']} url={result.get('url') or '(none — pool, waiting for drain)'}")
+                      f"status={result['status']} url={result.get('url') or '(none — parts, ready on download)'}")
                 break
             time.sleep(5)
         else:

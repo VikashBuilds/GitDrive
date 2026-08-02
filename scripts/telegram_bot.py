@@ -290,7 +290,7 @@ def handle_callback(chat_id: int, message_id: int, data: str):
         edit(chat_id, message_id,
              "📤 To upload a file, just send it to me as a document.\n\n"
              "• Files up to 100 MB upload here directly.\n"
-             "• Bigger files go through the relay pool automatically.\n"
+             "• Bigger files are stored as release parts, re-assembled on download.\n"
              "• Send a photo as a file (paperclip → document) so I keep the name.",
              markup=menu_markup())
         return

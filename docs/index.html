@@ -117,6 +117,8 @@
   .uqsub{display:flex;align-items:center;gap:10px;margin-top:7px;font-size:12px;color:var(--faint)}
   .uqsub .btn{color:var(--bad);background:none;border:none;font-size:12px;cursor:pointer;font-weight:650;margin-left:auto;padding:2px 4px}
   .uqsub .btn:hover{text-decoration:underline;color:var(--bad)}
+  .dlbox{display:flex;flex-direction:column;gap:6px;margin:12px 0;padding:12px 14px;background:var(--panel2);border:1px solid var(--line);border-radius:var(--r-md)}
+  .dlbox #dlName{font-weight:650;font-size:13px;color:var(--txt);word-break:break-all}
 
   /* ---------- files ---------- */
   .toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px}
@@ -251,7 +253,6 @@
   <div class="stats" id="stats">
     <div class="stat"><div class="lbl">Files stored</div><div class="val" id="sFiles">–</div><div class="sub" id="sDel"></div></div>
     <div class="stat"><div class="lbl">Storage used</div><div class="val" id="sBytes">–</div><div class="sub">across GitHub repos</div></div>
-    <div class="stat"><div class="lbl">Pool nodes</div><div class="val" id="sNodes">–</div><div class="sub" id="sNodeSub">background workers</div></div>
     <div class="stat"><div class="lbl">Pending tasks</div><div class="val" id="sJobs">–</div><div class="sub">in the pipeline</div></div>
   </div>
 
@@ -295,6 +296,11 @@
         <option value="size">Largest first</option>
       </select>
     </div>
+    <div class="dlbox" id="dlBox" style="display:none">
+      <span id="dlName"></span>
+      <div class="pbar"><div class="pfill" id="dlFill"></div></div>
+      <div class="dssub" id="dlSub"></div>
+    </div>
     <div id="files"><div class="empty">loading…</div></div>
   </div>
 
@@ -330,11 +336,9 @@ const WF_INFO = {
   "upload-service":["🖥️","API server","Handles uploads and feeds this dashboard."],
   "verify":        ["🧪","Daily self-check","Tests all storage tiers, once a day."],
   "telegram":      ["🤖","Telegram bot","Upload and manage files from Telegram."],
-  "carousel":      ["🚚","Storage pool nodes","Keep big files alive and moving."],
   "prune":         ["🧹","Cleanup & expiry","Deletes expired files daily."],
   "compress":      ["🗜️","Compression farm","Shrinks images and videos."],
   "cache-backup":  ["💾","Backup cache","Extra mirror for hot files."],
-  "supervisor":    ["🛰️","Node watchguard","Restarts any dead pool node."],
 };
 const STATUS_LABEL = {ready:"Ready", buffered:"Buffering", uploading:"Uploading", failed:"Failed",
                       compressing:"Compressing", compressed:"Compressed",
@@ -385,21 +389,21 @@ async function encryptSlice(slice, fileId, startIdx, first, onStep){
   }
   return { blob: new Blob(parts, {type:"application/octet-stream"}), nextIdx: idx };
 }
-async function decryptStream(res, fileId){
+async function* decryptChunks(res, fileId){
   const key = await fileKey(fileId);
   const reader = res.body.getReader();
   const { value: head } = await reader.read();
   if(!head) throw new Error("empty response");
   for(let i = 0; i < ENCMAGIC.length; i++) if(head[i] !== ENCMAGIC[i]) throw new Error("not a GitDrive-encrypted file");
   const chunkLen = new DataView(head.buffer, head.byteOffset, head.byteLength).getUint32(6, true);
-  const out = [];
   let idx = 0, carry = head.subarray(10);
   const want = chunkLen + 16;
   while(true){
     if(carry.length >= want){
       const ct = carry.subarray(0, want);
       const plain = await crypto.subtle.decrypt({name:"AES-GCM", iv: encIv(idx)}, key, ct);
-      out.push(plain); idx++; carry = carry.subarray(want);
+      idx++; carry = carry.subarray(want);
+      yield plain;
       continue;
     }
     const { value, done } = await reader.read();
@@ -407,6 +411,10 @@ async function decryptStream(res, fileId){
     carry = concat(carry, value);
   }
   if(carry.length) throw new Error("truncated encrypted stream");
+}
+async function decryptStream(res, fileId){
+  const out = [];
+  for await (const chunk of decryptChunks(res, fileId)) out.push(chunk);
   return new Blob(out);
 }
 
@@ -567,9 +575,6 @@ function render(d){
   document.getElementById("sFiles").textContent = s.files;
   document.getElementById("sBytes").textContent = fmtBytes(s.bytes_total);
   document.getElementById("sDel").textContent = s.deleted ? s.deleted + " deleted" : "";
-  const active = d.nodes.filter(n => n.status === "active" && !stale(n.last_seen)).length;
-  document.getElementById("sNodes").textContent = active;
-  document.getElementById("sNodeSub").textContent = active + " of " + d.nodes.length + " pool nodes healthy";
   document.getElementById("sJobs").textContent = d.jobs.length;
 
   const problems = [];
@@ -584,7 +589,7 @@ function render(d){
       ".<small>Click “Run now” below, or check its logs in GitHub Actions.</small>";
   } else {
     b.className = "banner ok"; b.style.display = "block";
-    b.innerHTML = "All systems running ✔<small>Files, pool nodes, and all background workers are healthy.</small>";
+    b.innerHTML = "All systems running ✔<small>Files, releases, and all background workers are healthy.</small>";
   }
 
   renderWorkers(d);
@@ -643,7 +648,7 @@ function renderFiles(files){
     return;
   }
   box.innerHTML = list.map(f => {
-    const dlReady = f.status === "ready" || (f.store === "pool" && f.status === "buffered");
+    const dlReady = f.status === "ready";
     const priv = !!f.private, enc = !!f.enc;
     const st = STATUS_LABEL[f.status] || f.status;
     const chipCls = f.status === "ready" || f.status === "compressed" ? "ok"
@@ -717,9 +722,28 @@ async function downloadFile(id){
   } catch(e){ toast("Download failed: " + e.message, 6000); }
 }
 async function downloadEncrypted(f){
+  const total = f.size || 0;
+  const showDl = showSaveFilePicker && total >= 512 * 1024 * 1024;
+  if(showDl) showDlStatus(true, "Decrypting & saving " + f.name + "…", 0, "");
   try {
     const res = await fetch(base + "/v1/download/" + f.id, {headers: headers()});
     if(!res.ok) throw new Error("HTTP " + res.status + (res.status === 401 ? " (bad API key?)" : ""));
+    const ctLen = parseInt(res.headers.get("content-length") || "0", 10) || 0;
+    if(showDl){
+      const handle = await window.showSaveFilePicker({suggestedName: f.name});
+      const writable = await handle.createWritable();
+      let plain = 0;
+      for await (const chunk of decryptChunks(res, f.id)){
+        await writable.write(chunk);
+        plain += chunk.byteLength;
+        showDlStatus(true, "Decrypting & saving " + f.name + "…", total ? plain / total * 100 : 0,
+          fmtBytes(plain) + " / " + fmtBytes(total) + " decrypted");
+      }
+      await writable.close();
+      showDlStatus(false);
+      toast("Saved to disk ✔ " + f.name, 5000);
+      return;
+    }
     const blob = await decryptStream(res, f.id);
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
@@ -727,7 +751,20 @@ async function downloadEncrypted(f){
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 30000);
     toast("Downloaded & decrypted ✔ " + f.name, 5000);
-  } catch(e){ toast("Download failed: " + e.message, 6000); }
+  } catch(e){
+    if(showDl) showDlStatus(false);
+    if(e.name === "AbortError"){ toast("Download cancelled.", 3000); return; }
+    toast("Download failed: " + e.message, 6000);
+  }
+}
+function showDlStatus(on, name, pct, sub){
+  const box = document.getElementById("dlBox");
+  if(!box) return;
+  box.style.display = on ? "flex" : "none";
+  if(!on) return;
+  document.getElementById("dlName").textContent = name;
+  document.getElementById("dlFill").style.width = Math.min(100, pct) + "%";
+  document.getElementById("dlSub").textContent = sub;
 }
 function copyLink(id){
   const f = fileById(id);

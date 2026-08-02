@@ -2,7 +2,7 @@
 
 Run by .github/workflows/verify-cycle.yml. Walks through every tier:
   upload (git small file)  ->  dedupe  ->  archive (parts)  ->  download + SHA check
-  pool / relay handoff / compress are reported as pending (they run on other
+  compress is reported as pending (it runs on a separate worker
   workers) but their presence in the DB is verified.
 
 Usage:
@@ -146,12 +146,12 @@ def main():
         if r is not None and r.status_code == 200:
             check("archive sha", hashlib.sha256(r.content).hexdigest() == hashlib.sha256(big).hexdigest())
 
-        # 5. pool awareness (report, not fail — depends on live carousel)
+        # 5. worker awareness (report, not fail — depends on live workers)
         r = call(c, "get", f"{args.api}/v1/stats", headers=headers)
         stats = r.json() if r is not None and r.status_code == 200 else {}
         check("stats", r is not None and r.status_code == 200,
               f"files={stats.get('files')} bytes={stats.get('bytes_total')}")
-        print(f"[verify] pool/compress/handoff run on their own workers — check GridLive for those.")
+        print(f"[verify] compress runs on its own workers — check GridLive for those.")
     finally:
         # every verify run creates test files — remove them so they don't pile
         # up in storage repos and the dashboard (even on failure).

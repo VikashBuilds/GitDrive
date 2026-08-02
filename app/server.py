@@ -15,7 +15,7 @@ import psycopg2
 import uvicorn
 from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 
 DB_URL = os.environ["DB_URL"]
 API_KEYS = [k.strip() for k in os.environ.get("API_KEYS", "").split(",") if k.strip()]
@@ -33,10 +33,8 @@ PRIVATE_STORAGE_REPOS = [r.strip() for r in os.environ.get("PRIVATE_STORAGE_REPO
 GH_TOKEN = os.environ["GH_TOKEN"]
 GIT_THRESHOLD = int(os.environ.get("UPLOAD_LIMIT_MB", "25")) * 1024 * 1024
 RELEASE_MAX = 2 * 1024 * 1024 * 1024          # GitHub release asset cap
-POOL_PART_MAX = int(1.8 * 1024 * 1024 * 1024)  # durable pool buffer part size
-POOL_MAX_GB = int(os.environ.get("POOL_MAX_GB", "12"))
-POOL_MAX = POOL_MAX_GB * 1024 * 1024 * 1024    # max file that fits a 14 GB pool node
-RELAY_TOKEN = os.environ.get("RELAY_TOKEN", "")
+MAX_UPLOAD_GB = int(os.environ.get("MAX_UPLOAD_GB", os.environ.get("POOL_MAX_GB", "14")))
+MAX_UPLOAD = MAX_UPLOAD_GB * 1024 * 1024 * 1024  # max file we accept (chunked into release parts)
 DASHBOARD_REPO = os.environ.get("DASHBOARD_REPO", "VikashBuilds/GitDrive")
 BUFFER_DIR = "/tmp/gitdrive-buffer"
 RATE_LIMIT_WRITE = int(os.environ.get("RATE_LIMIT_WRITE_PER_HOUR", "300"))
@@ -272,36 +270,6 @@ def health():
     return {"ok": True, "uptime_s": int(time.time() - start_time)}
 
 
-@app.get("/v1/buffer/{file_id}")
-def buffer_download(file_id: str, x_relay_token: str = Header("")):
-    """Carousel nodes pull big buffered files from here (relay-token auth)."""
-    if x_relay_token != RELAY_TOKEN:
-        raise HTTPException(403, "bad relay token")
-    conn = db()
-    cur = conn.cursor()
-    cur.execute("SELECT path, name FROM files WHERE id = %s AND store = 'pool'", (file_id,))
-    row = cur.fetchone()
-    cur.close()
-    conn.close()
-    if not row:
-        raise HTTPException(404, "not found")
-    f = os.path.join(BUFFER_DIR, row[0])
-    if not os.path.isfile(f):
-        raise HTTPException(404, "buffer expired")
-    return FileResponse(f, filename=row[1])
-
-
-@app.delete("/v1/buffer/{file_id}")
-def buffer_delete(file_id: str, x_relay_token: str = Header("")):
-    """Carousel nodes confirm a successful drain; buffer is freed."""
-    if x_relay_token != RELAY_TOKEN:
-        raise HTTPException(403, "bad relay token")
-    f = os.path.join(BUFFER_DIR, file_id)
-    if os.path.isfile(f):
-        os.remove(f)
-    return {"deleted": True}
-
-
 # ---------- archive tier: unlimited storage via chunked Releases ----------
 
 @app.post("/v1/archive/start")
@@ -506,50 +474,46 @@ async def download(file_id: str, x_api_key: str = Header(""), key: str = ""):
     conn.commit()
     cur.close()
     conn.close()
-    if store == "pool" and status == "deleted":
-        raise HTTPException(410, "file deleted â€” copy pruned from pool")
-    if private or enc:
-        # private â†’ authenticated proxy; enc â†’ route through the API so the
-        # browser can decrypt the ciphertext client-side (no CORS redirect).
-        return _download_private(store, name, repo, tag, path, parts_json, size)
-    if store == "pool" and (not url or not url.startswith("http")):
-        # Buffered big file: durable parts already exist in the release â€”
-        # stream them now instead of waiting for a pool node to claim it.
-        parts = json.loads(parts_json or "[]")
-        if not parts:
-            raise HTTPException(404, "no parts yet â€” still buffering")
-        total = sum(p["size"] for p in parts)
+    if status == "deleted":
+        raise HTTPException(410, "file deleted")
 
-        async def gen_pool():
-            for p in parts:
-                async with _gh_async.stream("GET", p["url"]) as r:
-                    r.raise_for_status()
-                    async for chunk in r.aiter_bytes(1024 * 256):
-                        yield chunk
-
-        return StreamingResponse(
-            gen_pool(),
-            media_type="application/octet-stream",
-            headers={
-                "Content-Length": str(total),
-                "Content-Disposition": f'attachment; filename="{name}"',
-            },
-        )
-    if store == "archive":
-        parts = json.loads(parts_json or "[]")
-        if not parts:
-            raise HTTPException(404, "no parts")
-        total = sum(p["size"] for p in parts)
-
+    def gen_parts(parts):
         async def gen():
             for p in parts:
+                if not p.get("url"):
+                    continue
                 async with _gh_async.stream("GET", p["url"]) as r:
                     r.raise_for_status()
                     async for chunk in r.aiter_bytes(1024 * 256):
                         yield chunk
+        return gen()
 
+    if private:
+        # Private files can't be streamed from public URLs — auth via API.
+        return _download_private(store, name, repo, tag, path, parts_json, size)
+    if enc:
+        # Encrypted files must come through the API so the browser can decrypt
+        # the ciphertext (a redirect would break CORS). Stream the durable
+        # part URLs straight through the proxy — no per-part API lookups.
+        parts = json.loads(parts_json or "[]")
+        if parts:
+            return StreamingResponse(
+                gen_parts(parts),
+                media_type="application/octet-stream",
+                headers={
+                    "Content-Length": str(sum(p["size"] for p in parts)),
+                    "Content-Disposition": f'attachment; filename="{name}"',
+                },
+            )
+        return _download_private(store, name, repo, tag, path, parts_json, size)
+    if store in ("pool", "release", "archive") and (not url or not url.startswith("http")):
+        # Chunked big files: concatenate their release parts on the fly.
+        parts = json.loads(parts_json or "[]")
+        if not parts:
+            raise HTTPException(404, "no parts yet")
+        total = sum(p["size"] for p in parts)
         return StreamingResponse(
-            gen(),
+            gen_parts(parts),
             media_type="application/octet-stream",
             headers={
                 "Content-Length": str(total),
@@ -612,12 +576,12 @@ def finalize_upload(name: str, mime: str, data_path: str, expires: datetime | No
         store = "release"
         status = "ready"
     else:
-        # Big file (2-12 GB): only the relay pool can hold it. Buffer it
-        # durably as release-asset parts (survives runner rotation), then a
-        # carousel node drains the parts into its set whenever it boots.
-        # Parts are staged to disk and pushed with curl -T: uploads.github.com
-        # rejects chunked/streamed bodies (needs a real Content-Length).
-        tag = "pool-" + fid
+        # Big file (over 2 GB): split it into <=2 GB parts and store them all
+        # in one release, one part per asset. Downloads concatenate the parts
+        # on the fly. Parts are staged to disk and pushed with curl -T:
+        # uploads.github.com rejects chunked/streamed bodies (needs a real
+        # Content-Length).
+        tag = "assets-" + fid
         release_id = ensure_release(tag, repo)
         r = _gh.get(f"https://api.github.com/repos/{repo}/releases/tags/{tag}", headers=GH)
         existing = {}
@@ -629,10 +593,10 @@ def finalize_upload(name: str, mime: str, data_path: str, expires: datetime | No
             with open(data_path, "rb") as fh:
                 idx = 0
                 while True:
-                    base = idx * POOL_PART_MAX
+                    base = idx * RELEASE_MAX
                     if base >= size:
                         break
-                    end = min(base + POOL_PART_MAX, size)
+                    end = min(base + RELEASE_MAX, size)
                     part_name = f"{name}.p{idx:03d}"
                     if part_name in existing:
                         part_url = existing[part_name]
@@ -667,9 +631,9 @@ def finalize_upload(name: str, mime: str, data_path: str, expires: datetime | No
                 os.remove(part_tmp)
         parts_json = json.dumps(parts)
         os.remove(data_path)
-        url = ""
-        store = "pool"
-        status = "buffered"
+        url = f"/v1/download/{fid}"
+        store = "release"
+        status = "ready"
 
     cur.execute(
         "INSERT INTO files (id, sha, name, size, mime, store, path, release_tag, url, expires_at, set_id, repo, status, parts_json, private, enc) "
@@ -680,20 +644,9 @@ def finalize_upload(name: str, mime: str, data_path: str, expires: datetime | No
     cur.close()
     conn.close()
 
-    if store == "pool":
-        conn2 = db()
-        conn2.autocommit = True
-        cur2 = conn2.cursor()
-        cur2.execute(
-            "INSERT INTO jobs (type, target_id) VALUES ('pool-store', %s)", (fid,),
-        )
-        cur2.close()
-        conn2.close()
-
     enqueue_compress(fid, size, mime, enc, private)
-    note = "queued for relay pool" if store == "pool" else None
     return {"id": fid, "name": name, "size": size, "mime": mime, "url": url,
-            "deduped": False, "status": status, "note": note, "private": private, "enc": enc,
+            "deduped": False, "status": status, "note": None, "private": private, "enc": enc,
             "expires_at": expires.isoformat() if expires else None}
 
 
@@ -723,8 +676,8 @@ async def upload(file: UploadFile = File(...), private: bool = Form(False), enc:
             total += len(chunk)
             fh.write(chunk)
     try:
-        if total > POOL_MAX:
-            raise HTTPException(413, f"file too large (max {POOL_MAX_GB} GB â€” pool limit)")
+        if total > MAX_UPLOAD:
+            raise HTTPException(413, f"file too large (max {MAX_UPLOAD_GB} GB)")
         expires = datetime.now(timezone.utc) + timedelta(days=expire_days) if expire_days else None
         result = finalize_upload(name, mime, spool, expires=expires, fid=fid, private=private, enc=enc)
     finally:
@@ -746,8 +699,8 @@ async def upload_start(name: str, total_size: int, mime: str = "", private: bool
     check_key(x_api_key, need="upload", mutating=True)
     if fid is not None and not re.fullmatch(r"[0-9a-f]{12}", fid):
         raise HTTPException(400, "fid must be 12 hex chars")
-    if total_size > POOL_MAX:
-        raise HTTPException(413, f"file too large (max {POOL_MAX_GB} GB â€” pool limit)")
+    if total_size > MAX_UPLOAD:
+        raise HTTPException(413, f"file too large (max {MAX_UPLOAD_GB} GB)")
     safe = re.sub(r"[^A-Za-z0-9._-]", "_", name or "file")
     ext = os.path.splitext(safe)[1].lower()
     if ext in BLOCKED_EXT or (mime or "").lower() in BLOCKED_MIME:
@@ -757,7 +710,7 @@ async def upload_start(name: str, total_size: int, mime: str = "", private: bool
     fid = fid or uuid.uuid4().hex[:12]
     set_id = f"set-{int(fid[:2], 16) % SET_COUNT:02d}"
     repo = private_repo_for(set_id) if private else repo_for(set_id)
-    tag = f"pool-{fid}"
+    tag = f"assets-{fid}"
     conn = db()
     cur = conn.cursor()
     cur.execute("SELECT parts_json, status, size FROM files WHERE id = %s", (fid,))
@@ -775,8 +728,8 @@ async def upload_start(name: str, total_size: int, mime: str = "", private: bool
     ensure_release(tag, repo)
     cur.execute(
         "INSERT INTO files (id, sha, name, size, mime, store, path, release_tag, url, status, set_id, repo, parts_json, private, enc) "
-        "VALUES (%s, %s, %s, %s, %s, 'pool', %s, %s, '', 'uploading', %s, %s, '[]', %s, %s)",
-        (fid, f"pool-{fid}", safe, total_size, mime, f"parts/{fid}", tag, set_id, repo, private, enc),
+        "VALUES (%s, %s, %s, %s, %s, 'release', %s, %s, '', 'uploading', %s, %s, '[]', %s, %s)",
+        (fid, f"assets-{fid}", safe, total_size, mime, f"parts/{fid}", tag, set_id, repo, private, enc),
     )
     conn.commit()
     cur.close()
@@ -794,7 +747,7 @@ async def upload_chunk(fid: str, offset: int, request: Request, x_api_key: str =
     check_key(x_api_key, need="upload", mutating=True)
     conn = db()
     cur = conn.cursor()
-    cur.execute("SELECT name, repo, release_tag, parts_json, size FROM files WHERE id = %s AND store = 'pool' AND status = 'uploading'", (fid,))
+    cur.execute("SELECT name, repo, release_tag, parts_json, size FROM files WHERE id = %s AND status = 'uploading'", (fid,))
     row = cur.fetchone()
     cur.close()
     conn.close()
@@ -843,7 +796,7 @@ async def upload_complete(fid: str, x_api_key: str = Header("")):
     check_key(x_api_key, need="upload", mutating=True)
     conn = db()
     cur = conn.cursor()
-    cur.execute("SELECT name, parts_json, size FROM files WHERE id = %s AND store = 'pool'", (fid,))
+    cur.execute("SELECT name, parts_json, size FROM files WHERE id = %s", (fid,))
     row = cur.fetchone()
     if not row:
         cur.close()
@@ -857,7 +810,7 @@ async def upload_complete(fid: str, x_api_key: str = Header("")):
         conn.close()
         raise HTTPException(400, f"incomplete upload: {have}/{total}")
     cur.execute("UPDATE files SET status = 'ready', url = %s, sha = %s WHERE id = %s",
-                (f"/v1/download/{fid}", f"pool-{fid}-{name}", fid))
+                (f"/v1/download/{fid}", f"assets-{fid}-{name}", fid))
     conn.commit()
     cur.close()
     conn.close()
@@ -917,17 +870,11 @@ def delete_file(file_id: str, x_api_key: str = Header("")):
     store, path, name, tag, repo, parts_json = row
     if store == "git":
         git_delete_path(path, repo)
-    elif store == "archive":
+    elif parts_json:
+        # Chunked file (archive, or a big file stored as release parts —
+        # legacy pool rows carry parts_json too): remove every part asset,
+        # then drop the row.
         release_delete_parts(parts_json, tag, repo)
-    elif store == "pool":
-        # Durable buffer lives as release-asset parts; delete them, then mark
-        # the row deleted so the next carousel check-in prunes it from disk.
-        release_delete_parts(parts_json, tag, repo)
-        cur.execute("UPDATE files SET status = 'deleted' WHERE id = %s", (file_id,))
-        conn.commit()
-        cur.close()
-        conn.close()
-        return {"deleted": True, "note": "pool parts removed; disk copy pruned at next carousel check-in"}
     else:
         release_delete(name, tag, repo)
     # jobs.target_id has an FK to files(id) — drop any pipeline jobs for this
@@ -962,11 +909,9 @@ WORKFLOW_FILES = {
     "upload-service": "upload-service.yml",
     "verify": "verify-cycle.yml",
     "telegram": "telegram-bot.yml",
-    "carousel": "carousel-node.yml",
     "prune": "prune.yml",
     "compress": "compress-workers.yml",
     "cache-backup": "cache-backup.yml",
-    "supervisor": "carousel-supervisor.yml",
 }
 _workflows_cache = {"t": 0.0, "data": []}
 
@@ -1059,9 +1004,6 @@ def dispatch_workflow(workflow: str, node_id: str = "", run_minutes: str = "",
     if not wf_file:
         raise HTTPException(400, f"unknown workflow; choose from {sorted(WORKFLOW_FILES)}")
     payload = {"ref": "main"}
-    if workflow == "carousel":
-        payload["inputs"] = {"node_id": node_id or "carousel-04",
-                             "run_minutes": run_minutes or "30"}
     r = _gh.post(
         f"https://api.github.com/repos/{DASHBOARD_REPO}/actions/workflows/{wf_file}/dispatches",
         headers=GH,
