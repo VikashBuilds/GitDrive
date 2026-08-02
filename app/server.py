@@ -767,9 +767,11 @@ async def upload_chunk(fid: str, offset: int, request: Request, x_api_key: str =
             raise HTTPException(413, "chunk too large (max 90 MB)")
     if not data:
         raise HTTPException(400, "empty chunk")
-    data = data[: total - have]
-    if not data:
-        return {"offset": have, "done": True}
+    # NOTE: no `data[: total - have]` truncation here. Encrypted chunks are
+    # larger than their plaintext size (16 B per 1 MiB block + 10 B header),
+    # so a plaintext-based cap silently cut the tail off the final chunk and
+    # made the file undecryptable. The 409 offset check above is the source
+    # of truth; the client never sends more than the remaining ciphertext.
     release_id = ensure_release(tag, repo)
     pname = f"{name}.p{len(parts):03d}"
     r = _gh.post(
