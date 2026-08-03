@@ -545,6 +545,11 @@ function iconFor(f){
   return "📁";
 }
 function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
+function errText(e){
+  if(!e) return "unknown error";
+  if(e && e.name) return e.name + (e.message ? ": " + e.message : " (no message)");
+  return String(e);
+}
 
 // ============================== refresh & render ==============================
 async function refresh(){
@@ -701,7 +706,12 @@ async function fetchParts(id){
 async function streamParts(f, handle, sizes, enc, key, cb){
   const want = ECHUNK + 16;
   const total = f.size || 0;
-  const writable = await handle.createWritable();
+  let writable;
+  try {
+    writable = await handle.createWritable();
+  } catch(e){
+    throw new Error("can't open the file for writing — close any editor/viewer that has it open (" + errText(e) + ")");
+  }
   let done = 0, idx = 0, leftover = enc ? new Uint8Array(0) : null;
   const n = sizes.length;
   for(let i = 0; i < n; i++){
@@ -713,7 +723,7 @@ async function streamParts(f, handle, sizes, enc, key, cb){
         buf = new Uint8Array(await res.arrayBuffer());
         break;
       } catch(e){
-        if(attempt >= 4) throw e;
+        if(attempt >= 4) throw new Error("part " + (i + 1) + "/" + n + " failed to download: " + errText(e));
         cb("Retrying part " + (i + 1) + "/" + n + " (" + attempt + ")…");
         await sleep(2000 * attempt);
       }
@@ -722,8 +732,17 @@ async function streamParts(f, handle, sizes, enc, key, cb){
       let data = i === 0 ? buf.subarray(10) : buf;   // strip the 10-byte header once
       data = leftover.length ? concat(leftover, data) : data;
       while(data.length >= want){
-        const plain = await crypto.subtle.decrypt({name:"AES-GCM", iv: encIv(idx)}, key, data.subarray(0, want));
-        await writable.write(plain);
+        let plain;
+        try {
+          plain = await crypto.subtle.decrypt({name:"AES-GCM", iv: encIv(idx)}, key, data.subarray(0, want));
+        } catch(e){
+          throw new Error("decrypt failed at block " + idx + " — wrong master password, or it was set with a different browser/device since upload (" + errText(e) + ")");
+        }
+        try {
+          await writable.write(plain);
+        } catch(e){
+          throw new Error("disk write failed — check free space where you're saving (" + errText(e) + ")");
+        }
         idx++; done += plain.byteLength; data = data.subarray(want);
         cb(null, Math.min(100, done / total * 100), fmtBytes(done) + " / " + fmtBytes(total) + " decrypted");
       }
@@ -735,9 +754,13 @@ async function streamParts(f, handle, sizes, enc, key, cb){
     }
   }
   if(enc && leftover.length){
-    const plain = await crypto.subtle.decrypt({name:"AES-GCM", iv: encIv(idx)}, key, leftover);
-    await writable.write(plain);
-    done += plain.byteLength;
+    try {
+      const plain = await crypto.subtle.decrypt({name:"AES-GCM", iv: encIv(idx)}, key, leftover);
+      await writable.write(plain);
+      done += plain.byteLength;
+    } catch(e){
+      throw new Error("final decrypt failed — wrong master password or truncated data (" + errText(e) + ")");
+    }
   }
   await writable.close();
 }
@@ -788,7 +811,7 @@ async function downloadFile(id){
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 30000);
     toast("Downloaded ✔ " + f.name, 5000);
-  } catch(e){ toast("Download failed: " + e.message, 6000); }
+  } catch(e){ toast("Download failed: " + errText(e), 9000); }
 }
 async function downloadEncrypted(f){
   const total = f.size || 0;
@@ -841,7 +864,7 @@ async function downloadEncrypted(f){
   } catch(e){
     if(handle) showDlStatus(false);
     if(e.name === "AbortError"){ toast("Download cancelled.", 3000); return; }
-    toast("Download failed: " + e.message, 6000);
+    toast("Download failed: " + errText(e), 9000);
   }
 }
 function showDlStatus(on, name, pct, sub){
