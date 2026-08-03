@@ -1,7 +1,7 @@
 """verify_cycle.py — end-to-end smoke test of GitDrive's data cycles.
 
 Run by .github/workflows/verify-cycle.yml. Walks through every tier:
-  upload (git small file)  ->  dedupe  ->  archive (parts)  ->  download + SHA check
+  upload (release small file)  ->  dedupe  ->  archive (parts)  ->  download + SHA check
   compress is reported as pending (it runs on a separate worker
   workers) but their presence in the DB is verified.
 
@@ -86,16 +86,16 @@ def main():
         payload = f"GitDrive verify {uuid.uuid4()} {time.time()}".encode()
         sha = hashlib.sha256(payload).hexdigest()
 
-        # 1. small-file upload (git tier)
+        # 1. small-file upload (release tier — small files live as release assets)
         r = call(c, "post", f"{args.api}/v1/upload", headers=headers,
                  files={"file": ("verify-small.txt", payload, "text/plain")})
-        check("upload small (git)", r is not None and r.status_code == 200,
+        check("upload small", r is not None and r.status_code == 200,
               f"-> {r.status_code if r else 'no response'}")
         if r is None or r.status_code != 200:
             sys.exit(1)
         up = r.json()
         created.append(up["id"])
-        check("upload url", "raw.githubusercontent.com" in up["url"], up["url"][:80])
+        check("upload url", "github.com/" in up["url"] and "/releases/download/" in up["url"], up["url"][:80])
 
         # 2. dedupe (same bytes -> same id, no second copy)
         r2 = call(c, "post", f"{args.api}/v1/upload", headers=headers,
@@ -105,11 +105,17 @@ def main():
 
         # 3. download + integrity (downloads require the API key)
         r3 = call(c, "get", f"{args.api}/v1/download/{up['id']}", headers=headers)
-        check("download git", r3 is not None and r3.status_code in (200, 301, 302, 307, 308),
+        check("download small", r3 is not None and r3.status_code in (200, 301, 302, 307, 308),
               f"-> {r3.status_code if r3 else 'no response'}")
         if r3.status_code == 200:
             got = r3.content
             check("sha match", hashlib.sha256(got).hexdigest() == sha)
+        elif r3.status_code in (301, 302, 307, 308):
+            loc = r3.headers.get("location", "")
+            r4 = call(c, "get", loc, headers=headers)
+            check("redirected sha match", r4 is not None and r4.status_code == 200
+                  and hashlib.sha256(r4.content).hexdigest() == sha,
+                  f"-> {r4.status_code if r4 else 'no response'}")
 
         # 4. archive tier (3 parts, reassembled on the fly)
         big = b"".join([hashlib.sha256(f"blob-{i}".encode()).digest() * 200 for i in range(3)])  # ~15 KB

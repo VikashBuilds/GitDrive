@@ -585,14 +585,7 @@ def finalize_upload(name: str, mime: str, data_path: str, expires: datetime | No
     repo = private_repo_for(set_id) if private else repo_for(set_id)
 
     parts_json = None
-    if size <= GIT_THRESHOLD:
-        with open(data_path, "rb") as fh:
-            git_store_bytes(fh.read(), rel, repo)
-        url = f"/v1/download/{fid}" if private else f"https://raw.githubusercontent.com/{repo}/main/{rel}"
-        store = "git"
-        tag = None
-        status = "ready"
-    elif size <= RELEASE_MAX:
+    if size <= RELEASE_MAX:
         with open(data_path, "rb") as fh:
             data = fh.read()
         tag = "assets-" + now.strftime("%Y%m%d%H")
@@ -912,7 +905,9 @@ def delete_file(file_id: str, x_api_key: str = Header("")):
         raise HTTPException(404, "not found")
     store, path, name, tag, repo, parts_json = row
     if store == "git":
-        git_delete_path(path, repo)
+        if repo in STORE_DIRS:
+            git_delete_path(path, repo)
+        # else: repo no longer in STORAGE_REPOS — nothing to remove, just drop the row.
     elif parts_json:
         # Chunked file (archive, or a big file stored as release parts —
         # legacy pool rows carry parts_json too): remove every part asset,
