@@ -112,7 +112,7 @@ def main():
             check("sha match", hashlib.sha256(got).hexdigest() == sha)
         elif r3.status_code in (301, 302, 307, 308):
             loc = r3.headers.get("location", "")
-            r4 = call(c, "get", loc, headers=headers)
+            r4 = httpx.get(loc, timeout=120)  # follows release -> CDN redirect chain
             check("redirected sha match", r4 is not None and r4.status_code == 200
                   and hashlib.sha256(r4.content).hexdigest() == sha,
                   f"-> {r4.status_code if r4 else 'no response'}")
