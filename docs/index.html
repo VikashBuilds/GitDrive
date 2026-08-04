@@ -1111,7 +1111,7 @@ async function uploadOne(it){
     let chunk = slice;
     if(enc){
       it.state = "encrypting"; renderQueue();
-      const e = await encryptSlice(slice, fid, off / CHUNK, off === 0, (p) => {
+      const e = await encryptSlice(slice, fid, off / ECHUNK, off === 0, (p) => {
         it.bytes = off + p * slice.size;
         it.pct = (off + p * slice.size) / it.total * 100; renderQueue();
       });
