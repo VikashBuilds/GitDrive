@@ -77,6 +77,19 @@ def db():
     return psycopg2.connect(DB_URL)
 
 
+def db_wait(timeout: int = 180):
+    """Retry the DB connection for up to `timeout` seconds — Aiven DNS blips
+    are transient and must not take the service down at boot."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            db().close()
+            return
+        except Exception:
+            time.sleep(10)
+    raise RuntimeError("database unreachable")
+
+
 def check_key(key: str, need: str = "admin", mutating: bool = False):
     if not _API_KEY_PLAIN or key not in _API_KEY_PLAIN:
         raise HTTPException(401, "invalid api key")
@@ -213,6 +226,7 @@ def enqueue_compress(file_id: str, size: int, mime: str, enc: bool = False, priv
 
 @app.on_event("startup")
 def startup():
+    db_wait()  # survive transient Aiven DNS/network failures before booting
     for repo, store_dir in STORE_DIRS.items():
         os.makedirs(store_dir, exist_ok=True)
         if not os.path.exists(os.path.join(store_dir, ".git")):

@@ -74,20 +74,49 @@ jobs:
           TUNNEL_URL: ${{ steps.tunnel.outputs.url }}
         run: |
           python - <<'EOF'
-          import os, psycopg2
+          import os, time, psycopg2
           url = os.environ.get("TUNNEL_URL", "").strip()
           if not url:
               print("tunnel URL empty — keeping previous value in DB")
               raise SystemExit(0)
-          conn = psycopg2.connect(os.environ["DB_URL"])
-          cur = conn.cursor()
-          cur.execute(
-              "INSERT INTO meta (k, v) VALUES ('tunnel_url', %s) "
-              "ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v, updated_at = now()",
-              (url,),
-          )
-          conn.commit()
-          cur.close(); conn.close()
+          last = None
+          for attempt in range(6):
+              try:
+                  conn = psycopg2.connect(os.environ["DB_URL"], connect_timeout=15)
+                  cur = conn.cursor()
+                  cur.execute(
+                      "INSERT INTO meta (k, v) VALUES ('tunnel_url', %s) "
+                      "ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v, updated_at = now()",
+                      (url,),
+                  )
+                  conn.commit()
+                  cur.close(); conn.close()
+                  print("tunnel URL recorded")
+                  raise SystemExit(0)
+              except Exception as e:
+                  last = e
+                  print(f"DB write attempt {attempt + 1}/6 failed: {e}")
+                  time.sleep(20)
+          # Informational only — a DNS blip must not kill the service job.
+          print(f"::warning::could not record tunnel URL: {last}")
+          EOF
+
+      - name: Wait for database
+        env:
+          DB_URL: ${{ secrets.GITDRIVE_DB_URL }}
+        run: |
+          python - <<'EOF'
+          import os, time, psycopg2
+          for attempt in range(12):
+              try:
+                  conn = psycopg2.connect(os.environ["DB_URL"], connect_timeout=15)
+                  conn.close()
+                  print("database reachable")
+                  raise SystemExit(0)
+              except Exception as e:
+                  print(f"DB wait attempt {attempt + 1}/12 failed: {e}")
+                  time.sleep(15)
+          raise SystemExit(f"database unreachable after 12 tries: {e}")
           EOF
 
       - name: Run GitDrive server
